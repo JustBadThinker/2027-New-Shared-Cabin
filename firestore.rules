@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Auth helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Entity validator for WiredBoatImage
+    function isValidWiredBoatImage(data) {
+      return data.keys().hasAll(['boatName', 'urls', 'updatedBy', 'updatedAt'])
+        && data.keys().size() == 4
+        && data.boatName is string
+        && data.boatName.size() <= 150
+        && data.urls is list
+        && data.urls.size() <= 50
+        && data.updatedBy == request.auth.uid
+        && data.updatedAt == request.time;
+    }
+
+    // Entity validator for Config Whitelist
+    function isValidConfigWhitelist(data) {
+      return data.keys().hasAll(['emails', 'updatedAt'])
+        && data.keys().size() == 2
+        && data.emails is list
+        && data.updatedAt is string;
+    }
+
+    match /wiredBoatImages/{boatId} {
+      allow get: if isSignedIn() && isValidId(boatId);
+      allow list: if isSignedIn();
+      
+      allow create: if isVerifiedUser() 
+                    && isValidId(boatId) 
+                    && isValidWiredBoatImage(incoming());
+                    
+      allow update: if isVerifiedUser() 
+                    && isValidId(boatId) 
+                    && isValidWiredBoatImage(incoming())
+                    && (!existing().keys().hasAll(['boatName']) || incoming().boatName == existing().boatName);
+                    
+      allow delete: if isVerifiedUser() 
+                    && isValidId(boatId)
+                    && existing().updatedBy == request.auth.uid;
+    }
+
+    match /config/{documentId} {
+      allow read, write: if isValidId(documentId);
+    }
+
+    match /shareLinks/{shareId} {
+      allow get: if isValidId(shareId);
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(shareId);
+      allow delete: if isValidId(shareId);
+    }
+  }
+}

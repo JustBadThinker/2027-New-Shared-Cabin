@@ -1,0 +1,8 @@
+{
+  "name": "Remix 2027",
+  "description": "Extract boat cabin details from spreadsheets and generate formatted templates for blog posts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

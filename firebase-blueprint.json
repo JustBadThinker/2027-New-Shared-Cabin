@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "WiredBoatImage": {
+      "title": "Wired Boat Image",
+      "description": "Manually wired direct image URLs for a specific boat name.",
+      "type": "object",
+      "properties": {
+        "boatName": {
+          "type": "string",
+          "description": "The exact boat name matching the app state."
+        },
+        "urls": {
+          "type": "array",
+          "description": "List of direct image link URLs"
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "The user ID who updated these links"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The server timestamp when updated"
+        }
+      },
+      "required": ["boatName", "urls", "updatedBy", "updatedAt"]
+    },
+    "Whitelist": {
+      "title": "Operator Whitelist",
+      "description": "Whitelist of Gmail addresses authorized to use the app.",
+      "type": "object",
+      "properties": {
+        "emails": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of whitelisted email addresses."
+        }
+      },
+      "required": ["emails"]
+    },
+    "ShareLink": {
+      "title": "Share Link Snapshot",
+      "description": "Customer shareable temporary link snapshot of boat and cabin availability.",
+      "type": "object",
+      "properties": {
+        "shareId": { "type": "string" },
+        "boatName": { "type": "string" },
+        "dates": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "expiresAt": { "type": "number" },
+        "cabins": { "type": "array" }
+      },
+      "required": ["shareId", "boatName", "dates", "status", "createdAt", "expiresAt", "cabins"]
+    }
+  },
+  "firestore": {
+    "wiredBoatImages/{boatId}": {
+      "schema": "WiredBoatImage",
+      "description": "Maps a boat (using a safe boat name ID) to its custom wired images list."
+    },
+    "config/{documentId}": {
+      "schema": "Whitelist",
+      "description": "System configurations such as the operator email whitelist or WhatsApp settings."
+    },
+    "shareLinks/{shareId}": {
+      "schema": "ShareLink",
+      "description": "Public temporary cabin availability snapshots for customers."
+    }
+  }
+}
