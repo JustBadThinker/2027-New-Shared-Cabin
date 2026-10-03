@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ShareLinkSnapshot } from '../types/share';
-import { listAllShareLinks, revokeShareLink, deleteShareLink, isShareLinkExpired } from '../lib/shareService';
+import { listAllShareLinks, revokeShareLink, deleteShareLink, isShareLinkExpired, getPublicShareUrl, syncLocalLinksToCloud } from '../lib/shareService';
 import { copyTextToClipboard } from '../lib/utils';
 import { 
   Link2, 
@@ -16,7 +16,8 @@ import {
   RefreshCw,
   AlertCircle,
   Eye,
-  CheckCircle2
+  CheckCircle2,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -34,10 +35,13 @@ export const ShareLinksManager: React.FC<ShareLinksManagerProps> = ({
   const [links, setLinks] = useState<ShareLinkSnapshot[]>([]);
   const [loading, setLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
   const fetchLinks = async () => {
     try {
       setLoading(true);
+      // Auto-sync any unsynced local links to Firestore
+      await syncLocalLinksToCloud().catch(() => {});
       const data = await listAllShareLinks();
       setLinks(data);
     } finally {
@@ -54,7 +58,7 @@ export const ShareLinksManager: React.FC<ShareLinksManagerProps> = ({
   if (!isOpen) return null;
 
   const handleCopy = async (shareId: string) => {
-    const url = `${window.location.origin}/share/${shareId}`;
+    const url = getPublicShareUrl(shareId);
     await copyTextToClipboard(url);
     setCopiedId(shareId);
     setTimeout(() => setCopiedId(null), 2000);
@@ -66,8 +70,19 @@ export const ShareLinksManager: React.FC<ShareLinksManagerProps> = ({
   };
 
   const handleDelete = async (shareId: string) => {
-    await deleteShareLink(shareId);
-    setLinks(links.filter(l => l.shareId !== shareId));
+    setDeletingIds(prev => new Set(prev).add(shareId));
+    try {
+      await deleteShareLink(shareId);
+      setLinks(prev => prev.filter(l => l.shareId !== shareId));
+    } catch (err) {
+      console.warn('Failed to delete share link:', err);
+    } finally {
+      setDeletingIds(prev => {
+        const next = new Set(prev);
+        next.delete(shareId);
+        return next;
+      });
+    }
   };
 
   const formatDate = (timestamp: number) => {
@@ -149,126 +164,152 @@ export const ShareLinksManager: React.FC<ShareLinksManagerProps> = ({
               )}
             </div>
           ) : (
-            links.map((link) => {
-              const isExpired = isShareLinkExpired(link);
-              const isRevoked = link.status === 'revoked';
-              const isActive = !isExpired && !isRevoked;
-              const cabinCount = link.cabins?.length || 0;
-              const shareUrl = `${window.location.origin}/share/${link.shareId}`;
+            <AnimatePresence mode="popLayout">
+              {links.map((link, idx) => {
+                const isExpired = isShareLinkExpired(link);
+                const isRevoked = link.status === 'revoked';
+                const isActive = !isExpired && !isRevoked;
+                const cabinCount = link.cabins?.length || 0;
+                const shareUrl = getPublicShareUrl(link.shareId);
+                const isDeleting = deletingIds.has(link.shareId);
 
-              return (
-                <div
-                  key={link.shareId}
-                  className={`p-4 rounded-2xl border transition-all ${
-                    isActive
-                      ? 'bg-[#181614] border-[#2e2a24] hover:border-[#3e3831]'
-                      : 'bg-[#181614]/50 border-[#2e2a24]/50 opacity-75'
-                  }`}
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-serif font-bold text-base text-[#f0e9dc]">
-                          {link.boatName}
-                        </span>
-                        <span className="font-mono text-xs text-[#a69a84] bg-[#201d1a] px-2 py-0.5 rounded-lg border border-[#2e2a24]">
-                          {link.shareId}
-                        </span>
-                        {/* Status Badge */}
-                        {isActive && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                            Active
+                return (
+                  <motion.div
+                    layout
+                    key={link.shareId || `share-link-${idx}`}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ 
+                      opacity: isDeleting ? 0.4 : 1, 
+                      scale: isDeleting ? 0.98 : 1,
+                      y: 0 
+                    }}
+                    exit={{ 
+                      opacity: 0, 
+                      scale: 0.92, 
+                      height: 0, 
+                      paddingTop: 0, 
+                      paddingBottom: 0, 
+                      marginTop: 0, 
+                      marginBottom: 0,
+                      overflow: 'hidden',
+                      transition: { duration: 0.25 } 
+                    }}
+                    className={`p-4 rounded-2xl border transition-all ${
+                      isActive
+                        ? 'bg-[#181614] border-[#2e2a24] hover:border-[#3e3831]'
+                        : 'bg-[#181614]/50 border-[#2e2a24]/50 opacity-75'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-serif font-bold text-base text-[#f0e9dc]">
+                            {link.boatName}
                           </span>
-                        )}
-                        {isRevoked && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 text-[10px] font-bold uppercase tracking-wider">
-                            Revoked
+                          <span className="font-mono text-xs text-[#a69a84] bg-[#201d1a] px-2 py-0.5 rounded-lg border border-[#2e2a24]">
+                            {link.shareId}
                           </span>
-                        )}
-                        {isExpired && !isRevoked && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-stone-500/10 border border-stone-500/20 text-stone-400 text-[10px] font-bold uppercase tracking-wider">
-                            Expired
+                          {/* Status Badge */}
+                          {isActive && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                              Active
+                            </span>
+                          )}
+                          {isRevoked && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 text-[10px] font-bold uppercase tracking-wider">
+                              Revoked
+                            </span>
+                          )}
+                          {isExpired && !isRevoked && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-stone-500/10 border border-stone-500/20 text-stone-400 text-[10px] font-bold uppercase tracking-wider">
+                              Expired
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#a69a84]">
+                          {link.dates && (
+                            <span className="flex items-center gap-1.5">
+                              <Calendar className="w-3.5 h-3.5 text-amber-400/80" />
+                              {link.dates}
+                            </span>
+                          )}
+                          <span>•</span>
+                          <span>{cabinCount} {cabinCount === 1 ? 'cabin' : 'cabins'}</span>
+                          <span>•</span>
+                          <span className="text-[11px] font-mono">
+                            Expires: {formatDate(link.expiresAt)}
                           </span>
-                        )}
+                        </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#a69a84]">
-                        {link.dates && (
-                          <span className="flex items-center gap-1.5">
-                            <Calendar className="w-3.5 h-3.5 text-amber-400/80" />
-                            {link.dates}
-                          </span>
-                        )}
-                        <span>•</span>
-                        <span>{cabinCount} {cabinCount === 1 ? 'cabin' : 'cabins'}</span>
-                        <span>•</span>
-                        <span className="text-[11px] font-mono">
-                          Expires: {formatDate(link.expiresAt)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Action buttons */}
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() => handleCopy(link.shareId)}
-                        className="px-3 py-1.5 rounded-xl border border-[#2e2a24] bg-[#201d1a] hover:bg-[#282420] text-xs font-semibold text-[#f0e9dc] flex items-center gap-1.5 transition-all"
-                        title="Copy Share Link"
-                      >
-                        {copiedId === link.shareId ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5 text-amber-400" />
-                        )}
-                        <span>{copiedId === link.shareId ? 'Copied' : 'Copy'}</span>
-                      </button>
-
-                      <a
-                        href={shareUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-2 rounded-xl border border-[#2e2a24] bg-[#201d1a] hover:bg-[#282420] text-[#f0e9dc] transition-all"
-                        title="Open Public Page"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
-
-                      {isActive && (
+                      {/* Action buttons */}
+                      <div className="flex items-center gap-2 shrink-0">
                         <button
-                          onClick={() => handleRevoke(link.shareId)}
-                          className="px-2.5 py-1.5 rounded-xl border border-destructive/30 bg-destructive/10 hover:bg-destructive/20 text-destructive text-xs font-semibold flex items-center gap-1 transition-all"
-                          title="Revoke Link (Make Unavailable Immediately)"
+                          onClick={() => handleCopy(link.shareId)}
+                          className="px-3 py-1.5 rounded-xl border border-[#2e2a24] bg-[#201d1a] hover:bg-[#282420] text-xs font-semibold text-[#f0e9dc] flex items-center gap-1.5 transition-all cursor-pointer"
+                          title="Copy Share Link"
                         >
-                          <Ban className="w-3.5 h-3.5" />
-                          <span>Revoke</span>
+                          {copiedId === link.shareId ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5 text-amber-400" />
+                          )}
+                          <span>{copiedId === link.shareId ? 'Copied' : 'Copy'}</span>
                         </button>
-                      )}
 
-                      <button
-                        onClick={() => handleDelete(link.shareId)}
-                        className="p-2 rounded-xl text-[#a69a84] hover:text-destructive hover:bg-destructive/10 transition-colors"
-                        title="Delete Record"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                        <a
+                          href={shareUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-xl border border-[#2e2a24] bg-[#201d1a] hover:bg-[#282420] text-[#f0e9dc] transition-all"
+                          title="Open Public Page"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+
+                        {isActive && (
+                          <button
+                            onClick={() => handleRevoke(link.shareId)}
+                            className="px-2.5 py-1.5 rounded-xl border border-destructive/30 bg-destructive/10 hover:bg-destructive/20 text-destructive text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer"
+                            title="Revoke Link (Make Unavailable Immediately)"
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                            <span>Revoke</span>
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => handleDelete(link.shareId)}
+                          disabled={isDeleting}
+                          className="p-2 rounded-xl text-[#a69a84] hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer disabled:opacity-50"
+                          title="Delete Record"
+                        >
+                          {isDeleting ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-destructive" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
                     </div>
-                  </div>
 
-                  {/* Included cabins breakdown */}
-                  <div className="flex flex-wrap gap-1.5 pt-2 border-t border-[#2e2a24]/50">
-                    {link.cabins?.map(c => (
-                      <span
-                        key={c.id}
-                        className="px-2 py-0.5 rounded-md bg-[#201d1a] border border-[#2e2a24] text-[10px] text-[#a69a84]"
-                      >
-                        {c.count > 1 ? `${c.count}x ` : ''}{c.name}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              );
-            })
+                    {/* Included cabins breakdown */}
+                    <div className="flex flex-wrap gap-1.5 pt-2 border-t border-[#2e2a24]/50">
+                      {link.cabins?.map((c, cIdx) => (
+                        <span
+                          key={`${c.id || c.name || 'cabin'}-${cIdx}`}
+                          className="px-2 py-0.5 rounded-md bg-[#201d1a] border border-[#2e2a24] text-[10px] text-[#a69a84]"
+                        >
+                          {c.count > 1 ? `${c.count}x ` : ''}{c.name}
+                        </span>
+                      ))}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </AnimatePresence>
           )}
         </div>
 

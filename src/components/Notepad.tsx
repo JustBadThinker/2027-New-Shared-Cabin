@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from 'react';
-import { Copy, Check, Trash2, Edit3, Save, LayoutGrid, FileText, Clock, AlertCircle, CheckSquare, Square, GripVertical, ArrowUpNarrowWide, RotateCcw, Link2, Share2 } from 'lucide-react';
+import { Copy, Check, Trash2, Edit3, Save, LayoutGrid, FileText, Clock, AlertCircle, CheckSquare, Square, GripVertical, ArrowUpNarrowWide, RotateCcw, Link2, Share2, RefreshCw, Languages } from 'lucide-react';
 import { useStore, SavedNote, NoteLabel } from '../store';
 import { cn, copyTextToClipboard } from '../lib/utils';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
+import { convertStoredNoteFormat } from '../lib/shareService';
 
 const LABEL_CONFIG: Record<NoteLabel, { color: string, bg: string, ring: string }> = {
   'Overbudget': { color: 'text-red-700 dark:text-red-400', bg: 'bg-red-50/80 dark:bg-red-950/20', ring: 'ring-red-100 dark:ring-red-900/30' },
@@ -14,6 +15,9 @@ const LABEL_CONFIG: Record<NoteLabel, { color: string, bg: string, ring: string 
 
 export const Notepad: React.FC = () => {
   const { 
+    boats,
+    tabs,
+    activeTabId,
     savedNotes, 
     updateNote, 
     updateNoteLabel, 
@@ -24,11 +28,36 @@ export const Notepad: React.FC = () => {
     clearNotes 
   } = useStore();
 
+  const activeTab = (tabs.find(t => t.id === activeTabId) || tabs[0] || {}) as any;
+  const activeLang: 'FR' | 'ENG' = activeTab.language || 'FR';
+  const activeLinkPref: 'AUTO' | 'FR' | 'ENG' = activeTab.linkPreference || 'AUTO';
+
   const [view, setView] = useState<'CARDS' | 'UNIFIED'>('CARDS');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showSortEditor, setShowSortEditor] = useState(false);
+  const [syncedNotice, setSyncedNotice] = useState<string | null>(null);
+
+  const handleConvertNote = (note: SavedNote, lang: 'FR' | 'ENG', linkPref: 'AUTO' | 'FR' | 'ENG') => {
+    const converted = convertStoredNoteFormat(note, lang, linkPref, boats);
+    updateNote(note.id, converted.content);
+    useStore.setState((state) => ({
+      savedNotes: state.savedNotes.map(n => n.id === note.id ? { 
+        ...n, 
+        content: converted.content, 
+        boatSnapshot: converted.boatSnapshot 
+      } : n)
+    }));
+  };
+
+  const handleInheritAllFromActiveTab = () => {
+    savedNotes.forEach(note => {
+      handleConvertNote(note, activeLang, activeLinkPref);
+    });
+    setSyncedNotice(`Updated ${savedNotes.length} boats to ${activeLang === 'FR' ? 'French / LBB' : 'English / KIC'}`);
+    setTimeout(() => setSyncedNotice(null), 2500);
+  };
 
   const sortedNotes = useMemo(() => {
     return [...savedNotes].sort((a, b) => {
@@ -96,15 +125,26 @@ export const Notepad: React.FC = () => {
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
         <div className="space-y-1">
           <h2 className="text-2xl font-serif italic flex items-center gap-3 text-foreground">
-            5. Personal Notepad
+            5. Stored Boats
             <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-bold not-italic font-sans uppercase tracking-wider">
-              {savedNotes.length} Items
+              {savedNotes.length} {savedNotes.length === 1 ? 'Boat' : 'Boats'}
             </span>
           </h2>
-          <p className="text-xs text-muted-foreground">Label, sort, and group by client with distinct color indicators.</p>
+          <p className="text-xs text-muted-foreground">Saved boat proposals ready to copy, switch between KIC and LBB links, or share.</p>
         </div>
         
         <div className="flex flex-wrap items-center gap-3">
+          {savedNotes.length > 0 && (
+            <button
+              onClick={handleInheritAllFromActiveTab}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary transition-all active:scale-95 cursor-pointer"
+              title={`Convert all stored boats to active tab settings: ${activeLang === 'FR' ? 'French / LBB' : 'English / KIC'} (${activeLinkPref})`}
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Sync All to {activeLang === 'FR' ? 'LBB (FR)' : 'KIC (ENG)'}</span>
+            </button>
+          )}
+
           <div className="flex p-1 bg-muted/50 rounded-xl border border-border/50">
             <button
               onClick={() => setView('CARDS')}
@@ -338,6 +378,42 @@ export const Notepad: React.FC = () => {
                               </pre>
                             </div>
                           )}
+                          
+                          {/* Format & Link quick switcher (LBB vs KIC) */}
+                          <div className="pt-2 border-t border-border/40 flex flex-col gap-1.5">
+                            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                              <span className="flex items-center gap-1 font-bold uppercase tracking-wider">
+                                <Languages className="w-3 h-3 text-primary" />
+                                Convert Format & Links
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-3 gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleConvertNote(note, 'FR', 'FR')}
+                                className="px-2 py-1 rounded-lg border border-border bg-card/60 hover:bg-muted text-[10px] font-semibold text-muted-foreground hover:text-foreground transition-all flex items-center justify-center gap-1 cursor-pointer"
+                                title="Convert to French with Lebaliblog (LBB) links"
+                              >
+                                🇫🇷 LBB (FR)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleConvertNote(note, 'ENG', 'ENG')}
+                                className="px-2 py-1 rounded-lg border border-border bg-card/60 hover:bg-muted text-[10px] font-semibold text-muted-foreground hover:text-foreground transition-all flex items-center justify-center gap-1 cursor-pointer"
+                                title="Convert to English with Komodo Island Cruises (KIC) links"
+                              >
+                                🇬🇧 KIC (ENG)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleConvertNote(note, activeLang, activeLinkPref)}
+                                className="px-2 py-1 rounded-lg border border-primary/30 bg-primary/10 hover:bg-primary/20 text-[10px] font-bold text-primary transition-all flex items-center justify-center gap-1 cursor-pointer"
+                                title={`Inherit active tab settings: ${activeLang === 'FR' ? 'French / LBB' : 'English / KIC'} (${activeLinkPref})`}
+                              >
+                                ⚡ Inherit Tab
+                              </button>
+                            </div>
+                          </div>
                           
                           <button
                             onClick={() => handleCopy(note.id, note.content)}

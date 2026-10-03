@@ -6,7 +6,8 @@ import {
   buildDynamicWhatsAppMessage, 
   getDisplayImageUrl, 
   getDriveThumbnailUrl,
-  isShareLinkExpired
+  isShareLinkExpired,
+  FALLBACK_CABIN_IMAGES
 } from '../lib/shareService';
 import { 
   ExternalLink, 
@@ -548,7 +549,12 @@ ${cabinLabel} : ${cabinVal}`;
                   ? activeCabin.images 
                   : (activeCabin.imageUrl ? [activeCabin.imageUrl] : []))
               : [];
-            const rawImgUrl = cabinImages[activeImgIdx] || activeCabin?.imageUrl || '';
+            
+            const hash = Math.abs(
+              (boat.boatName + (activeCabin?.id || activeCabin?.name || 'cabin')).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+            );
+            const fallbackYacht = FALLBACK_CABIN_IMAGES[hash % FALLBACK_CABIN_IMAGES.length];
+            const rawImgUrl = cabinImages[activeImgIdx] || activeCabin?.imageUrl || fallbackYacht;
             const currentImgDisplayUrl = getDisplayImageUrl(rawImgUrl);
 
             return (

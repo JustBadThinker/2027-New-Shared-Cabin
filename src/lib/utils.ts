@@ -205,33 +205,141 @@ export async function copyImageToClipboard(fileIdOrUrl: string): Promise<'IMAGE'
 }
 
 /**
- * Parses any raw date reference like "17 Jul", "6-7-8 Juli", or "20-21-22 July"
- * and formats it into a clean sequential date range like "17 - 18 - 19 Jul 2026"
+ * Safe UUID generator that never throws, even in older Android webviews,
+ * non-secure HTTP contexts, or restricted iframes.
+ */
+export function safeUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    try {
+      return crypto.randomUUID();
+    } catch (_) {}
+  }
+  return 'u_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
+}
+
+const MONTH_NORMALIZATION: Record<string, { index: number; isFrench: boolean; isShort: boolean }> = {
+  jan: { index: 0, isFrench: false, isShort: true },
+  january: { index: 0, isFrench: false, isShort: false },
+  janvier: { index: 0, isFrench: true, isShort: false },
+  januari: { index: 0, isFrench: false, isShort: false },
+
+  feb: { index: 1, isFrench: false, isShort: true },
+  fév: { index: 1, isFrench: true, isShort: true },
+  fev: { index: 1, isFrench: true, isShort: true },
+  february: { index: 1, isFrench: false, isShort: false },
+  fevrier: { index: 1, isFrench: true, isShort: false },
+  février: { index: 1, isFrench: true, isShort: false },
+  februari: { index: 1, isFrench: false, isShort: false },
+
+  mar: { index: 2, isFrench: false, isShort: true },
+  mars: { index: 2, isFrench: true, isShort: false },
+  march: { index: 2, isFrench: false, isShort: false },
+  maret: { index: 2, isFrench: false, isShort: false },
+
+  apr: { index: 3, isFrench: false, isShort: true },
+  avr: { index: 3, isFrench: true, isShort: true },
+  april: { index: 3, isFrench: false, isShort: false },
+  avril: { index: 3, isFrench: true, isShort: false },
+
+  may: { index: 4, isFrench: false, isShort: false },
+  mai: { index: 4, isFrench: true, isShort: false },
+  mei: { index: 4, isFrench: false, isShort: false },
+
+  jun: { index: 5, isFrench: false, isShort: true },
+  june: { index: 5, isFrench: false, isShort: false },
+  juin: { index: 5, isFrench: true, isShort: false },
+  juni: { index: 5, isFrench: false, isShort: false },
+
+  jul: { index: 6, isFrench: false, isShort: true },
+  juil: { index: 6, isFrench: true, isShort: true },
+  july: { index: 6, isFrench: false, isShort: false },
+  juillet: { index: 6, isFrench: true, isShort: false },
+  juli: { index: 6, isFrench: false, isShort: false },
+
+  aug: { index: 7, isFrench: false, isShort: true },
+  aout: { index: 7, isFrench: true, isShort: false },
+  août: { index: 7, isFrench: true, isShort: false },
+  august: { index: 7, isFrench: false, isShort: false },
+  agustus: { index: 7, isFrench: false, isShort: false },
+
+  sep: { index: 8, isFrench: false, isShort: true },
+  sept: { index: 8, isFrench: true, isShort: true },
+  september: { index: 8, isFrench: false, isShort: false },
+  septembre: { index: 8, isFrench: true, isShort: false },
+
+  oct: { index: 9, isFrench: false, isShort: true },
+  october: { index: 9, isFrench: false, isShort: false },
+  cotober: { index: 9, isFrench: false, isShort: false },
+  oktober: { index: 9, isFrench: false, isShort: false },
+  octobre: { index: 9, isFrench: true, isShort: false },
+
+  nov: { index: 10, isFrench: false, isShort: true },
+  november: { index: 10, isFrench: false, isShort: false },
+  novembre: { index: 10, isFrench: true, isShort: false },
+
+  dec: { index: 11, isFrench: false, isShort: true },
+  déc: { index: 11, isFrench: true, isShort: true },
+  december: { index: 11, isFrench: false, isShort: false },
+  decembre: { index: 11, isFrench: true, isShort: false },
+  décembre: { index: 11, isFrench: true, isShort: false },
+  desember: { index: 11, isFrench: false, isShort: false },
+};
+
+const MONTH_NAMES_FULL_ENG = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+const MONTH_NAMES_SHORT_ENG = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+];
+const MONTH_NAMES_FULL_FR = [
+  'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+  'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+];
+const MONTH_NAMES_SHORT_FR = [
+  'Jan', 'Fév', 'Mars', 'Avr', 'Mai', 'Juin',
+  'Juil', 'Août', 'Sept', 'Oct', 'Nov', 'Déc'
+];
+
+/**
+ * Intelligent date parser and formatter that translates inquiry date inputs into calendar dates,
  * which adapts dynamically based on duration if provided.
+ * Uses REAL calendar arithmetic to avoid impossible dates (e.g. 30, 31, 32 Oct -> 30, 31 Oct - 1 Nov).
  */
 export function parseAndFormatInquiryDate(rawDateLine: string, duration?: string): string {
   if (!rawDateLine) return '';
   
-  let clean = rawDateLine.trim();
+  const clean = rawDateLine.trim();
 
-  // Try to find if there's any year in the text (like 2024, 2025, 2026, etc.)
+  // Try to find if there's any year in the text (like 2024, 2025, 2026, 2027, etc.)
   const hasYear = /\b20\d{2}\b/.test(clean);
-  const year = hasYear ? clean.match(/\b20\d{2}\b/)![0] : '2026';
+  const yearStr = hasYear ? clean.match(/\b20\d{2}\b/)![0] : '2026';
+  const startYear = parseInt(yearStr, 10) || 2026;
 
-  // Find month name
-  const monthRegex = /(janvier|january|jan|fevrier|février|february|feb|mars|march|mar|avril|april|apr|mai|may|juin|june|jun|juillet|july|jul|juli|aout|août|august|aug|septembre|september|sept|octobre|october|oct|novembre|november|nov|decembre|décembre|dec)/i;
+  // Find month name (including typos like cotober or foreign names)
+  const monthRegex = /(janvier|january|januari|jan|fevrier|février|februari|february|fév|fev|feb|maret|mars|march|mar|avril|april|avr|apr|mei|mai|may|juni|juin|june|jun|juillet|juli|july|juil|jul|agustus|aout|août|august|aug|septembre|september|sept|sep|octobre|oktober|cotober|october|oct|novembre|november|nov|decembre|décembre|desember|december|déc|dec)/i;
   const monthMatch = clean.match(monthRegex);
   if (!monthMatch) {
     return clean + (hasYear ? "" : " 2026");
   }
 
-  const rawMonthJoined = monthMatch[0];
-  const capitalizedMonth = rawMonthJoined.charAt(0).toUpperCase() + rawMonthJoined.slice(1).toLowerCase();
+  const rawMonthKey = monthMatch[0].toLowerCase();
+  const monthMeta = MONTH_NORMALIZATION[rawMonthKey] || { index: 9, isFrench: false, isShort: false };
+  const monthIndex = monthMeta.index;
+  const isFrench = monthMeta.isFrench;
+  const isShort = monthMeta.isShort;
 
-  // Strip anything that is NOT a number from the text to isolate day numbers.
-  // First, strip out the year (to avoid registering 2026 as a day!)
-  // and strip out durations (to avoid registering 3 as in 3D2N as a day!)
-  let textForDays = clean
+  // Helper to format a month name according to language and short/full preference
+  const formatMonthName = (mIdx: number): string => {
+    if (isFrench) {
+      return isShort ? MONTH_NAMES_SHORT_FR[mIdx] : MONTH_NAMES_FULL_FR[mIdx];
+    }
+    return isShort ? MONTH_NAMES_SHORT_ENG[mIdx] : MONTH_NAMES_FULL_ENG[mIdx];
+  };
+
+  // Strip non-day numbers from the text to isolate day numbers.
+  const textForDays = clean
     .replace(/\b20\d{2}\b/g, '')
     .replace(/\(\s*\d+\s*[a-zA-Z]+\s*\)/g, '') // strip (3J2N) or (3D2N)
     .replace(/\b\d+\s*[dDjJnN]\s*\d*\s*[nN]?\b/g, '') // strip 3D2N, 3J2N, 2D1N, etc
@@ -248,15 +356,17 @@ export function parseAndFormatInquiryDate(rawDateLine: string, duration?: string
   // Determine how many days should be represented.
   let numDays = 3; // default is 3 days
   if (duration) {
-    if (duration.toUpperCase().includes('2D') || duration.toUpperCase().includes('2J')) numDays = 2;
-    else if (duration.toUpperCase().includes('3D') || duration.toUpperCase().includes('3J')) numDays = 3;
-    else if (duration.toUpperCase().includes('4D') || duration.toUpperCase().includes('4J')) numDays = 4;
+    const durUpper = duration.toUpperCase();
+    if (durUpper.includes('2D') || durUpper.includes('2J')) numDays = 2;
+    else if (durUpper.includes('3D') || durUpper.includes('3J')) numDays = 3;
+    else if (durUpper.includes('4D') || durUpper.includes('4J')) numDays = 4;
+    else if (durUpper.includes('5D') || durUpper.includes('5J')) numDays = 5;
   } else {
     // If we have multiple numbers, calculate number of days
     if (dayNumbers.length > 1) {
       const minDay = Math.min(...dayNumbers);
       const maxDay = Math.max(...dayNumbers);
-      if (maxDay - minDay < 10) { // check if they are within a reasonable range
+      if (maxDay - minDay < 10) {
         numDays = maxDay - minDay + 1;
       } else {
         numDays = dayNumbers.length;
@@ -266,14 +376,50 @@ export function parseAndFormatInquiryDate(rawDateLine: string, duration?: string
 
   const startDay = dayNumbers[0];
 
-  // Generate sequence of days
-  const generatedDays: number[] = [];
+  // Generate sequence using real Calendar Date arithmetic
+  const dateSequence: Date[] = [];
   for (let i = 0; i < numDays; i++) {
-    generatedDays.push(startDay + i);
+    // Native Date handles month rollovers automatically (e.g. Oct 32 -> Nov 1)
+    const d = new Date(startYear, monthIndex, startDay + i);
+    dateSequence.push(d);
   }
 
-  const formattedDays = generatedDays.join(' - ');
-  return `${formattedDays} ${capitalizedMonth} ${year}`;
+  // Check if all days fall into the same month
+  const firstDate = dateSequence[0];
+  const lastDate = dateSequence[dateSequence.length - 1];
+
+  if (firstDate.getMonth() === lastDate.getMonth()) {
+    // Same month
+    const dayStr = dateSequence.map(d => d.getDate()).join(' - ');
+    return `${dayStr} ${formatMonthName(firstDate.getMonth())} ${firstDate.getFullYear()}`;
+  }
+
+  // Crossing months (e.g. 30, 31 Oct and 1 Nov)
+  // Group days by month
+  const monthGroups: { monthIdx: number; year: number; days: number[] }[] = [];
+  dateSequence.forEach(d => {
+    const m = d.getMonth();
+    const y = d.getFullYear();
+    const lastGroup = monthGroups[monthGroups.length - 1];
+    if (lastGroup && lastGroup.monthIdx === m && lastGroup.year === y) {
+      lastGroup.days.push(d.getDate());
+    } else {
+      monthGroups.push({ monthIdx: m, year: y, days: [d.getDate()] });
+    }
+  });
+
+  const parts = monthGroups.map((g, idx) => {
+    const isLast = idx === monthGroups.length - 1;
+    const daysJoined = g.days.join(' - ');
+    const mName = formatMonthName(g.monthIdx);
+    if (isLast) {
+      return `${daysJoined} ${mName} ${g.year}`;
+    }
+    // For earlier month in the same year, show days + month name
+    return `${daysJoined} ${mName}`;
+  });
+
+  return parts.join(' - ');
 }
 
 /**

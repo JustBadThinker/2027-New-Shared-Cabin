@@ -2,7 +2,7 @@ import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, query, 
 import { db, auth } from './firebase';
 import { Cabin, DriveFile, SavedNote, Boat } from '../store';
 import { ShareLinkSnapshot, BoatSnapshot, WhatsAppConfig, DEFAULT_WHATSAPP_CONFIG, CabinSnapshot } from '../types/share';
-import { isValidLink } from './utils';
+import { isValidLink, translateDate } from './utils';
 
 const STORAGE_KEY_WHATSAPP = 'admin_whatsapp_config';
 const STORAGE_KEY_LINKS = 'cabin_share_links';
@@ -23,6 +23,17 @@ export function generateShareId(): string {
     }
   }
   return result;
+}
+
+/**
+ * Returns a globally accessible public URL for the share link.
+ * In AI Studio environments, transforms the private dev domain (ais-dev-*)
+ * to the publicly reachable shared domain (ais-pre-*) so external clients can view without authentication.
+ */
+export function getPublicShareUrl(shareId: string): string {
+  const origin = window.location.origin;
+  const publicOrigin = origin.replace('ais-dev-', 'ais-pre-');
+  return `${publicOrigin}/share/${shareId}`;
 }
 
 export function cleanPhoneNumber(phone: string): string {
@@ -125,12 +136,143 @@ function removeAccents(str: string): string {
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
-// Elegant luxury yacht cabin fallback photos
-const FALLBACK_CABIN_IMAGES = [
+// Elegant luxury yacht cabin fallback photos (neutral, unbranded, watermark-free)
+export const FALLBACK_CABIN_IMAGES = [
   'https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&w=1200&q=80',
   'https://images.unsplash.com/photo-1578683010236-d716f9a3f461?auto=format&fit=crop&w=1200&q=80',
   'https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&w=1200&q=80'
 ];
+
+/**
+ * Generates all search variations and aliases for a boat name (handling spacing, punctuation, and numerals)
+ */
+export function getBoatSearchAliases(boatName: string | null | undefined): string[] {
+  if (!boatName) return [];
+  const raw = removeAccents(boatName).toLowerCase().trim();
+  const base = raw.split('(')[0].split('-')[0].trim();
+  
+  const aliases = new Set<string>();
+  
+  const addVariants = (name: string) => {
+    if (!name) return;
+    aliases.add(name);
+    const noSpecial = name.replace(/[^a-z0-9]/g, '');
+    if (noSpecial.length >= 2) aliases.add(noSpecial);
+    const underscored = name.replace(/[\s-]+/g, '_');
+    if (underscored.length >= 2) aliases.add(underscored);
+    const hyphenated = name.replace(/[\s_]+/g, '-');
+    if (hyphenated.length >= 2) aliases.add(hyphenated);
+
+    if (/\b1\b/.test(name)) {
+      addVariants(name.replace(/\b1\b/g, 'one'));
+      addVariants(name.replace(/\b1\b/g, 'i'));
+    }
+    if (/\b2\b/.test(name)) {
+      addVariants(name.replace(/\b2\b/g, 'two'));
+      addVariants(name.replace(/\b2\b/g, 'ii'));
+    }
+    if (/\b3\b/.test(name)) {
+      addVariants(name.replace(/\b3\b/g, 'three'));
+      addVariants(name.replace(/\b3\b/g, 'iii'));
+    }
+    if (/\b4\b/.test(name)) {
+      addVariants(name.replace(/\b4\b/g, 'four'));
+      addVariants(name.replace(/\b4\b/g, 'iv'));
+    }
+  };
+
+  addVariants(raw);
+  if (base && base !== raw) {
+    addVariants(base);
+  }
+
+  // Custom known vessel aliases
+  if (raw.includes('alf 3') || raw.includes('alf3') || raw.includes('al fathran') || raw.includes('alfathran')) {
+    aliases.add('alf 3');
+    aliases.add('alf3');
+    aliases.add('al fathran 3');
+    aliases.add('alfathran 3');
+    aliases.add('al fathran iii');
+    aliases.add('alfathran iii');
+    aliases.add('al fathran');
+    aliases.add('alfathran');
+  }
+  if (raw.includes('nk jaya') || raw.includes('nkjaya')) {
+    aliases.add('nk jaya');
+    aliases.add('nkjaya');
+    aliases.add('nk_jaya');
+    aliases.add('n k jaya');
+  }
+  if (raw.includes('dunia baru') || raw.includes('duniabaru')) {
+    aliases.add('dunia baru');
+    aliases.add('duniabaru');
+    aliases.add('dunia_baru');
+  }
+  if (raw.includes('3 island') || raw.includes('3island')) {
+    aliases.add('3 island');
+    aliases.add('3island');
+    aliases.add('3_island');
+    aliases.add('3-island');
+    aliases.add('three island');
+    aliases.add('threeisland');
+  }
+
+  return Array.from(aliases).filter(a => a.length >= 2);
+}
+
+/**
+ * Checks whether a given drive filename belongs strictly to the requested boat
+ */
+export function isFileBelongingToBoat(fileName: string, boatName: string): boolean {
+  if (!fileName || !boatName) return false;
+  const fRaw = removeAccents(fileName).toLowerCase();
+  const fNormal = fRaw.replace(/[^a-z0-9]/g, '');
+
+  const aliases = getBoatSearchAliases(boatName);
+  for (const alias of aliases) {
+    const aliasNormal = alias.replace(/[^a-z0-9]/g, '');
+    if (aliasNormal.length >= 3 && fNormal.includes(aliasNormal)) {
+      return true;
+    }
+    if (fRaw.includes(alias)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Extracts distinctive cabin keywords (including room names in parentheses like 'Jember', 'Padar')
+ */
+function extractCabinKeywords(cabin: Cabin): string[] {
+  const words: string[] = [];
+  const addNames = (nameStr?: string) => {
+    if (!nameStr) return;
+    // Extract text in parentheses (e.g., 'Private Cabin (Jember)' -> 'jember', 'Master Cabin (Padar)' -> 'padar')
+    const parenMatches = nameStr.match(/\(([^)]+)\)/g);
+    if (parenMatches) {
+      parenMatches.forEach(p => {
+        const inside = removeAccents(p.replace(/[()]/g, '')).toLowerCase().trim();
+        if (inside.length >= 3) words.push(inside);
+      });
+    }
+
+    const clean = removeAccents(nameStr).toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+    const parts = clean.split(/\s+/).filter(Boolean);
+    const exclude = ['cabin', 'cabine', 'chambre', 'room', 'avec', 'with', 'the', 'for', 'and', 'de', 'du', 'la', 'le'];
+    parts.forEach(p => {
+      if (p.length >= 3 && !exclude.includes(p)) {
+        words.push(p);
+      }
+    });
+  };
+
+  addNames(cabin.name);
+  addNames(cabin.nameEng);
+
+  return Array.from(new Set(words));
+}
 
 export function resolveCabinImageUrl(
   boatName: string,
@@ -140,13 +282,37 @@ export function resolveCabinImageUrl(
   wiredUrls: string[] = []
 ): string {
   const allFiles = [...kicFiles, ...lebaliblogFiles];
+  const boatWired = wiredUrls && wiredUrls.length > 0 ? wiredUrls : getWiredImages(boatName);
+
+  // 1. Isolate Drive files strictly belonging to THIS boat
+  const boatFiles = allFiles.filter(f => isFileBelongingToBoat(f.name, boatName));
+
   const cabinNameFr = removeAccents(cabin.name || '').toLowerCase();
   const cabinNameEng = removeAccents(cabin.nameEng || '').toLowerCase();
+  const cabinKeywords = extractCabinKeywords(cabin);
 
-  // 1. Check for Drive files directly matching the cabin name
-  if (allFiles.length > 0) {
-    // Try exact cabin name in filename
-    const exactMatch = allFiles.find(f => {
+  // 2. Check if this cabin has a direct drive link in cabin.link or cabin.linkEng
+  const checkDriveLink = (link?: string): string | null => {
+    if (!link) return null;
+    const fileDMatch = link.match(/\/file\/d\/([a-zA-Z0-9_-]{25,50})/);
+    if (fileDMatch && fileDMatch[1]) {
+      return getDisplayImageUrl(fileDMatch[1]);
+    }
+    const idParamMatch = link.match(/[&?]id=([a-zA-Z0-9_-]{25,50})/);
+    if (idParamMatch && idParamMatch[1]) {
+      return getDisplayImageUrl(idParamMatch[1]);
+    }
+    return null;
+  };
+  const directLinkUrl = checkDriveLink(cabin.link) || checkDriveLink(cabin.linkEng);
+  if (directLinkUrl) {
+    return directLinkUrl;
+  }
+
+  // 3. Search this boat's drive files for cabin match
+  if (boatFiles.length > 0) {
+    // Exact cabin name match within this boat's files
+    const exactMatch = boatFiles.find(f => {
       const fName = removeAccents(f.name || '').toLowerCase();
       return (cabinNameFr && fName.includes(cabinNameFr)) || (cabinNameEng && fName.includes(cabinNameEng));
     });
@@ -154,52 +320,43 @@ export function resolveCabinImageUrl(
       return getDisplayImageUrl(exactMatch.id);
     }
 
-    // Try token matching (at least one substantive keyword of cabin name)
-    const keywords = (cabin.nameEng || cabin.name)
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(w => w.length >= 4 && !['cabin', 'chambre', 'room', 'avec', 'with', 'the'].includes(w));
-    
-    if (keywords.length > 0) {
-      const tokenMatch = allFiles.find(f => {
+    // Keyword match within this boat's files
+    if (cabinKeywords.length > 0) {
+      const keywordMatch = boatFiles.find(f => {
         const fName = removeAccents(f.name || '').toLowerCase();
-        return keywords.some(k => fName.includes(k));
+        return cabinKeywords.some(k => fName.includes(k));
       });
-      if (tokenMatch) {
-        return getDisplayImageUrl(tokenMatch.id);
+      if (keywordMatch) {
+        return getDisplayImageUrl(keywordMatch.id);
       }
     }
   }
 
-  // 2. Check custom wired boat images if available
-  if (wiredUrls && wiredUrls.length > 0) {
+  // 4. Search wired images for this boat
+  if (boatWired.length > 0) {
     // Check if any wired URL contains cabin keyword
-    const matchWired = wiredUrls.find(u => {
-      const uLower = u.toLowerCase();
-      return (cabinNameFr && uLower.includes(cabinNameFr)) || (cabinNameEng && uLower.includes(cabinNameEng));
-    });
-    if (matchWired) {
-      return getDisplayImageUrl(matchWired);
+    if (cabinKeywords.length > 0) {
+      const matchedWired = boatWired.find(u => {
+        const uLower = u.toLowerCase();
+        return cabinKeywords.some(k => uLower.includes(k));
+      });
+      if (matchedWired) {
+        return getDisplayImageUrl(matchedWired);
+      }
     }
-    // Fall back to first wired boat image
-    return getDisplayImageUrl(wiredUrls[0]);
+    // Return first wired image for this boat
+    return getDisplayImageUrl(boatWired[0]);
   }
 
-  // 3. Check if any Drive file matches the boat name
-  if (allFiles.length > 0 && boatName) {
-    const boatClean = removeAccents(boatName).toLowerCase().replace(/[^a-z0-9]/g, '');
-    const boatFile = allFiles.find(f => {
-      const fClean = removeAccents(f.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      return fClean.includes(boatClean);
-    });
-    if (boatFile) {
-      return getDisplayImageUrl(boatFile.id);
-    }
+  // 5. Fallback to any photo of THIS boat in Google Drive
+  if (boatFiles.length > 0) {
+    return getDisplayImageUrl(boatFiles[0].id);
   }
 
-  // 4. Fallback luxury nautical placeholder
+  // 6. Universal fallback (neutral yacht photo)
+  // NEVER use files belonging to a different boat!
   const hash = Math.abs(
-    (cabin.id || cabin.name).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+    (boatName + (cabin.id || cabin.name)).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
   );
   return FALLBACK_CABIN_IMAGES[hash % FALLBACK_CABIN_IMAGES.length];
 }
@@ -214,72 +371,76 @@ export function resolveCabinImages(
 ): string[] {
   const images: string[] = [];
   const allFiles = [...kicFiles, ...lebaliblogFiles];
+  const boatWired = wiredUrls && wiredUrls.length > 0 ? wiredUrls : getWiredImages(boatName);
+
+  // 1. Isolate Drive files strictly belonging to THIS boat
+  const boatFiles = allFiles.filter(f => isFileBelongingToBoat(f.name, boatName));
+
   const cabinNameFr = removeAccents(cabin.name || '').toLowerCase();
   const cabinNameEng = removeAccents(cabin.nameEng || '').toLowerCase();
+  const cabinKeywords = extractCabinKeywords(cabin);
 
-  // 1. Direct drive files matching cabin name
-  if (allFiles.length > 0) {
-    allFiles.forEach(f => {
+  // 2. Check if cabin has a direct drive link
+  const checkDriveLink = (link?: string): string | null => {
+    if (!link) return null;
+    const fileDMatch = link.match(/\/file\/d\/([a-zA-Z0-9_-]{25,50})/);
+    if (fileDMatch && fileDMatch[1]) return getDisplayImageUrl(fileDMatch[1]);
+    const idParamMatch = link.match(/[&?]id=([a-zA-Z0-9_-]{25,50})/);
+    if (idParamMatch && idParamMatch[1]) return getDisplayImageUrl(idParamMatch[1]);
+    return null;
+  };
+  const directLinkUrl = checkDriveLink(cabin.link) || checkDriveLink(cabin.linkEng);
+  if (directLinkUrl && !images.includes(directLinkUrl)) {
+    images.push(directLinkUrl);
+  }
+
+  // 3. Cabin-specific matches within THIS boat's Drive files
+  if (boatFiles.length > 0) {
+    boatFiles.forEach(f => {
       const fName = removeAccents(f.name || '').toLowerCase();
-      if ((cabinNameFr && fName.includes(cabinNameFr)) || (cabinNameEng && fName.includes(cabinNameEng))) {
+      const isExact = (cabinNameFr && fName.includes(cabinNameFr)) || (cabinNameEng && fName.includes(cabinNameEng));
+      const isKeyword = cabinKeywords.length > 0 && cabinKeywords.some(k => fName.includes(k));
+      if (isExact || isKeyword) {
         const url = getDisplayImageUrl(f.id);
         if (url && !images.includes(url)) images.push(url);
       }
     });
-
-    // Token matches
-    if (images.length === 0) {
-      const keywords = (cabin.nameEng || cabin.name)
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(w => w.length >= 4 && !['cabin', 'chambre', 'room', 'avec', 'with', 'the'].includes(w));
-      
-      if (keywords.length > 0) {
-        allFiles.forEach(f => {
-          const fName = removeAccents(f.name || '').toLowerCase();
-          if (keywords.some(k => fName.includes(k))) {
-            const url = getDisplayImageUrl(f.id);
-            if (url && !images.includes(url)) images.push(url);
-          }
-        });
-      }
-    }
   }
 
-  // 2. Wired images
-  if (wiredUrls && wiredUrls.length > 0) {
-    wiredUrls.forEach(u => {
+  // 4. Cabin-specific matches within wired images for this boat
+  if (boatWired.length > 0) {
+    boatWired.forEach(u => {
       const uLower = u.toLowerCase();
-      if ((cabinNameFr && uLower.includes(cabinNameFr)) || (cabinNameEng && uLower.includes(cabinNameEng))) {
+      if (cabinKeywords.some(k => uLower.includes(k))) {
         const url = getDisplayImageUrl(u);
-        if (url && !images.includes(url)) images.push(url);
-      }
-    });
-    // Add first wired images if still empty
-    if (images.length === 0) {
-      wiredUrls.slice(0, 3).forEach(u => {
-        const url = getDisplayImageUrl(u);
-        if (url && !images.includes(url)) images.push(url);
-      });
-    }
-  }
-
-  // 3. Boat drive files if still empty
-  if (images.length === 0 && allFiles.length > 0 && boatName) {
-    const boatClean = removeAccents(boatName).toLowerCase().replace(/[^a-z0-9]/g, '');
-    allFiles.forEach(f => {
-      const fClean = removeAccents(f.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (fClean.includes(boatClean)) {
-        const url = getDisplayImageUrl(f.id);
         if (url && !images.includes(url)) images.push(url);
       }
     });
   }
 
-  // 4. Fallback if empty
+  // 5. If we still need images, supplement with other photos of THIS boat
+  if (images.length < 5) {
+    // Add wired photos of this boat
+    boatWired.forEach(u => {
+      const url = getDisplayImageUrl(u);
+      if (url && !images.includes(url) && images.length < 5) {
+        images.push(url);
+      }
+    });
+
+    // Add other drive photos of this boat
+    boatFiles.forEach(f => {
+      const url = getDisplayImageUrl(f.id);
+      if (url && !images.includes(url) && images.length < 5) {
+        images.push(url);
+      }
+    });
+  }
+
+  // 6. Universal fallback: If this boat has ZERO photos in Drive and ZERO wired images
   if (images.length === 0) {
-    const primary = resolveCabinImageUrl(boatName, cabin, kicFiles, lebaliblogFiles, wiredUrls);
-    images.push(primary);
+    const fallback = resolveCabinImageUrl(boatName, cabin, kicFiles, lebaliblogFiles, boatWired);
+    images.push(fallback);
   }
 
   return images.slice(0, 5);
@@ -462,11 +623,12 @@ export async function saveWhatsAppConfig(config: WhatsAppConfig): Promise<void> 
   (async () => {
     try {
       const docRef = doc(db, 'config', 'whatsapp');
-      await setDoc(docRef, {
+      const cleanPayload = sanitizeForFirestore({
         ...cleanConfig,
         updatedAt: new Date().toISOString(),
         updatedBy: auth.currentUser?.uid || 'local_admin',
       });
+      await setDoc(docRef, cleanPayload);
     } catch (e) {
       console.warn('Firestore WhatsApp config sync deferred/offline (saved locally):', e);
     }
@@ -480,7 +642,33 @@ export function parseNoteToBoatSnapshot(
   lebaliblogFiles: DriveFile[] = []
 ): BoatSnapshot {
   if (note.boatSnapshot && note.boatSnapshot.cabins && note.boatSnapshot.cabins.length > 0) {
-    return note.boatSnapshot;
+    const boatWired = getWiredImages(note.boatSnapshot.boatName);
+    const matchedBoat = boats.find(b => b.name.toLowerCase() === note.boatSnapshot!.boatName.toLowerCase()) ||
+                        boats.find(b => note.boatSnapshot!.boatName.toLowerCase().includes(b.name.toLowerCase()));
+
+    // Re-resolve images using the strict boat isolation logic
+    const updatedCabins = note.boatSnapshot.cabins.map(cab => {
+      const matchedCabin = matchedBoat?.cabins.find(c => 
+        c.id === cab.id || 
+        c.name.toLowerCase() === cab.name.toLowerCase() ||
+        (c.nameEng && cab.nameEng && c.nameEng.toLowerCase() === cab.nameEng.toLowerCase())
+      );
+      if (matchedCabin) {
+        const freshImages = resolveCabinImages(note.boatSnapshot!.boatName, matchedCabin, kicFiles, lebaliblogFiles, boatWired);
+        const freshImageUrl = freshImages[0] || resolveCabinImageUrl(note.boatSnapshot!.boatName, matchedCabin, kicFiles, lebaliblogFiles, boatWired);
+        return {
+          ...cab,
+          images: freshImages,
+          imageUrl: freshImageUrl
+        };
+      }
+      return cab;
+    });
+
+    return sanitizeForFirestore({
+      ...note.boatSnapshot,
+      cabins: updatedCabins
+    });
   }
 
   const content = note.content || '';
@@ -634,49 +822,218 @@ export function parseNoteToBoatSnapshot(
     });
   }
 
-  return {
+  return sanitizeForFirestore({
     boatName: finalBoatName,
-    itinerary,
-    dates,
-    duration,
-    departure,
+    itinerary: itinerary || '',
+    dates: dates || '',
+    duration: duration || '',
+    departure: departure || '',
     cabins: cabinSnapshots,
-    fuelSurcharge,
-    limitedServiceNote
+    fuelSurcharge: fuelSurcharge || '',
+    limitedServiceNote: limitedServiceNote || ''
+  });
+}
+
+/**
+ * Re-generates and converts a stored note's template text and snapshot
+ * to a target language (FR or ENG) and link preference (KIC, LBB, or AUTO),
+ * allowing operators to instantly swap an existing note's links and text without re-typing.
+ */
+export function convertStoredNoteFormat(
+  note: { title: string; content: string; boatSnapshot?: BoatSnapshot },
+  targetLang: 'FR' | 'ENG',
+  targetLinkPref: 'AUTO' | 'FR' | 'ENG',
+  boats: Boat[]
+): { content: string; boatSnapshot: BoatSnapshot } {
+  const snapshot = parseNoteToBoatSnapshot(note, boats);
+  const matchedBoat = boats.find(b => b.name.toLowerCase() === snapshot.boatName.toLowerCase()) ||
+                      boats.find(b => b.name.toLowerCase().includes(snapshot.boatName.toLowerCase())) ||
+                      boats.find(b => snapshot.boatName.toLowerCase().includes(b.name.toLowerCase()));
+
+  const translatedDates = translateDate(snapshot.dates, targetLang);
+
+  // Check for charter mode
+  const isCharter = /(?:charter|privatisation|privatise|private)/i.test(note.content) || 
+                    (snapshot.cabins && snapshot.cabins.length === 1 && snapshot.cabins[0].name.toLowerCase().includes('charter'));
+
+  if (isCharter && matchedBoat && (matchedBoat.charterFr || matchedBoat.charterEng)) {
+    const rawCharter = targetLang === 'ENG' 
+      ? (matchedBoat.charterEng || matchedBoat.charterFr || '')
+      : (matchedBoat.charterFr || matchedBoat.charterEng || '');
+    const text = rawCharter.replace(/\[DATES\]/gi, translatedDates || '[DATES]');
+    return {
+      content: text.trim(),
+      boatSnapshot: { ...snapshot, dates: translatedDates }
+    };
+  }
+
+  // Regular cabin mode
+  const isFrench = targetLang === 'FR';
+  const itinLabel = isFrench ? 'Itinéraire' : 'Itinerary';
+  const datesLabel = 'Dates';
+  const depLabel = isFrench ? 'Départ' : 'Departure';
+  const boatLabel = isFrench ? 'Bateau' : 'Boat';
+  const cabinLabel = isFrench ? 'Chambre' : 'Cabin';
+  const detailLabel = 'Detail';
+
+  let itinerary = snapshot.itinerary || (isFrench ? 'Labuan Bajo (Flores) A/R' : 'Labuan Bajo (Flores) Round Trip');
+  let departure = snapshot.departure || (isFrench ? '11h-12h / Arrivée : 11h-12h' : '11am-12pm / Arrival: 11am-12pm');
+
+  if (matchedBoat && matchedBoat.cabins.length > 0) {
+    const firstCabin = matchedBoat.cabins[0];
+    if (isFrench) {
+      if (firstCabin.itinerary) itinerary = firstCabin.itinerary;
+      if (firstCabin.departure) departure = firstCabin.departure;
+    } else {
+      if (firstCabin.itineraryEng) itinerary = firstCabin.itineraryEng;
+      if (firstCabin.departureEng) departure = firstCabin.departureEng;
+    }
+  }
+
+  const updatedCabins = (snapshot.cabins || []).map(cSnap => {
+    const cabinInBoat = matchedBoat?.cabins.find(c => 
+      c.id === cSnap.id || 
+      c.name.toLowerCase() === cSnap.name.toLowerCase() ||
+      (c.nameEng && c.nameEng.toLowerCase() === (cSnap.nameEng || cSnap.name).toLowerCase())
+    );
+
+    let cleanName = isFrench ? (cabinInBoat?.name || cSnap.name) : (cabinInBoat?.nameEng || cSnap.nameEng || cSnap.name);
+    cleanName = cleanName.replace(/^(\d+)x\s*/i, '');
+    const countPrefix = (cSnap.count && cSnap.count > 1) ? `${cSnap.count}x ` : '';
+    const fullCabinName = `${countPrefix}${cleanName}`;
+
+    let link = '';
+    if (targetLinkPref === 'ENG') {
+      link = cabinInBoat?.linkEng || cabinInBoat?.link || cSnap.websiteUrl || '';
+    } else if (targetLinkPref === 'FR') {
+      link = cabinInBoat?.link || cabinInBoat?.linkEng || cSnap.websiteUrl || '';
+    } else {
+      link = isFrench 
+        ? (cabinInBoat?.link || cabinInBoat?.linkEng || cSnap.websiteUrl || '')
+        : (cabinInBoat?.linkEng || cabinInBoat?.link || cSnap.websiteUrl || '');
+    }
+
+    return {
+      ...cSnap,
+      name: isFrench ? (cabinInBoat?.name || cSnap.name) : (cabinInBoat?.nameEng || cSnap.nameEng || cSnap.name),
+      nameEng: cabinInBoat?.nameEng || cSnap.nameEng,
+      fullCabinName,
+      websiteUrl: link
+    };
+  });
+
+  let result = '';
+  if (updatedCabins.length === 1) {
+    const single = updatedCabins[0];
+    result = `${itinLabel} : ${itinerary}  
+${datesLabel} : ${translatedDates}  
+${depLabel} : ${departure}  
+${boatLabel} : ${snapshot.boatName}  
+${cabinLabel} : ${single.fullCabinName}${single.websiteUrl ? `  
+${detailLabel} : ${single.websiteUrl}` : ''}`;
+  } else {
+    const cabinListText = updatedCabins.map(c => {
+      let line = `- ${c.fullCabinName}`;
+      if (c.websiteUrl) {
+        line += `\n  ${detailLabel} : ${c.websiteUrl}`;
+      }
+      return line;
+    }).join('\n');
+
+    result = `${itinLabel} : ${itinerary}  
+${datesLabel} : ${translatedDates}  
+${depLabel} : ${departure}  
+${boatLabel} : ${snapshot.boatName}  
+${cabinLabel} :
+${cabinListText}`;
+  }
+
+  // De-duplicated Fuel Surcharge and Limited Service Note strictly at the bottom
+  if (snapshot.fuelSurcharge) {
+    result += `\n\n⚠️ ⛽ Surcharge Carburant : ${snapshot.fuelSurcharge}`;
+  }
+  if (snapshot.limitedServiceNote) {
+    const serviceNote = isFrench 
+      ? 'Note : Service client limité en cas de problème sur ce bateau'
+      : 'Note: Limited client service in case of problems on this boat';
+    result += `\n${serviceNote}`;
+  }
+
+  return {
+    content: result.trim(),
+    boatSnapshot: {
+      ...snapshot,
+      dates: translatedDates,
+      itinerary,
+      departure,
+      cabins: updatedCabins
+    }
   };
+}
+
+/**
+ * Recursively strips `undefined` values from objects and arrays to ensure
+ * data is 100% compliant with Firestore rules and the JS SDK.
+ * Firestore throws a fatal error if any property value is undefined.
+ */
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === undefined) {
+    return null as any;
+  }
+  if (data === null || typeof data !== 'object') {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter(item => item !== undefined)
+      .map(item => sanitizeForFirestore(item)) as any;
+  }
+  const clean: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data as Record<string, any>)) {
+    if (value !== undefined) {
+      clean[key] = sanitizeForFirestore(value);
+    }
+  }
+  return clean as T;
 }
 
 // Share Link Management
 export async function createShareLinkSnapshot(snapshot: ShareLinkSnapshot): Promise<{ success: boolean; cloudSynced: boolean; error?: string }> {
-  // 1. Save to local storage cache immediately
+  // 1. Clean data to remove any undefined fields
+  const sanitizedSnapshot = sanitizeForFirestore(snapshot);
+
+  // Save to local storage cache immediately
   try {
     const existing = getLocalShareLinks();
-    const updated = [snapshot, ...existing.filter(l => l.shareId !== snapshot.shareId)];
+    const updated = [sanitizedSnapshot, ...existing.filter(l => l.shareId !== snapshot.shareId)];
     localStorage.setItem(STORAGE_KEY_LINKS, JSON.stringify(updated));
   } catch (err) {
     console.warn('Failed to store share link in localStorage:', err);
   }
 
-  // 2. Persist to Firestore with a 10s safety timeout and 2 attempts
+  // 2. Persist to Firestore with safety timeout and 3 attempts
   let cloudSynced = false;
   let lastError: string | undefined = undefined;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const docRef = doc(db, 'shareLinks', snapshot.shareId);
+      const cleanPayload = sanitizeForFirestore({
+        ...sanitizedSnapshot,
+        createdBy: auth.currentUser?.uid || 'anonymous',
+        createdAt: sanitizedSnapshot.createdAt || Date.now(),
+      });
+
       await withTimeout(
-        setDoc(docRef, {
-          ...snapshot,
-          createdBy: auth.currentUser?.uid || 'anonymous',
-        }),
-        10000
+        setDoc(docRef, cleanPayload),
+        6000
       );
       cloudSynced = true;
       break;
     } catch (err: any) {
       lastError = err?.message || String(err);
-      console.warn(`Firestore write attempt ${attempt} for share link failed (saved locally):`, err);
-      if (attempt < 2) {
+      console.warn(`Firestore write attempt ${attempt} for share link failed:`, err);
+      if (attempt < 3) {
         await new Promise(r => setTimeout(r, 400));
       }
     }
@@ -695,6 +1052,34 @@ export function getLocalShareLinks(): ShareLinkSnapshot[] {
   return [];
 }
 
+/**
+ * Automatically backfills and synchronizes any links stored only in local storage
+ * to Firestore. Ensures links created before security rules were deployed become cloud-accessible.
+ */
+export async function syncLocalLinksToCloud(): Promise<number> {
+  const local = getLocalShareLinks();
+  if (local.length === 0) return 0;
+  let synced = 0;
+  for (const item of local) {
+    try {
+      const docRef = doc(db, 'shareLinks', item.shareId);
+      const snap = await withTimeout(getDoc(docRef), 3000);
+      if (!snap || !snap.exists()) {
+        const cleanPayload = sanitizeForFirestore({
+          ...item,
+          createdBy: auth.currentUser?.uid || 'anonymous',
+          syncedFromLocalAt: Date.now()
+        });
+        await setDoc(docRef, cleanPayload);
+        synced++;
+      }
+    } catch (err) {
+      console.warn(`Could not sync link ${item.shareId}:`, err);
+    }
+  }
+  return synced;
+}
+
 export interface GetShareLinkResult {
   snapshot: ShareLinkSnapshot | null;
   status: 'success' | 'not_found' | 'network_error';
@@ -707,19 +1092,32 @@ export async function getShareLink(shareId: string): Promise<GetShareLinkResult>
   // Clean shareId in case URL had trailing slashes or spaces
   const cleanId = shareId.trim().replace(/\/+$/, '');
 
-  // 1. Try Firestore first with up to 2 attempts and 10s timeout
+  // 1. Try Firestore first with responsive 5s timeout and 2 attempts
   let lastError: any = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const docRef = doc(db, 'shareLinks', cleanId);
-      const snap = await withTimeout(getDoc(docRef), 10000);
+      const snap = await withTimeout(getDoc(docRef), 5000);
       if (snap && snap.exists()) {
-        return { snapshot: snap.data() as ShareLinkSnapshot, status: 'success' };
+        const data = snap.data() as ShareLinkSnapshot;
+        // Cache locally for faster future loads
+        try {
+          const existing = getLocalShareLinks();
+          const updated = [data, ...existing.filter(l => l.shareId !== data.shareId)];
+          localStorage.setItem(STORAGE_KEY_LINKS, JSON.stringify(updated.slice(0, 50)));
+        } catch (_) {}
+        return { snapshot: data, status: 'success' };
       } else {
         // Document does not exist in Firestore. Check local storage before giving up
         const localList = getLocalShareLinks();
         const found = localList.find(l => l.shareId === cleanId);
         if (found) {
+          // Background sync to cloud
+          const cleanPayload = sanitizeForFirestore({
+            ...found,
+            syncedAt: Date.now()
+          });
+          setDoc(doc(db, 'shareLinks', cleanId), cleanPayload).catch(() => {});
           return { snapshot: found, status: 'success' };
         }
         return { snapshot: null, status: 'not_found' };
@@ -728,7 +1126,7 @@ export async function getShareLink(shareId: string): Promise<GetShareLinkResult>
       lastError = err;
       console.warn(`Firestore fetch attempt ${attempt} for share link failed:`, err);
       if (attempt < 2) {
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 400));
       }
     }
   }

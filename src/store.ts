@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { User } from 'firebase/auth';
 import { BoatSnapshot } from './types/share';
+import { safeUUID } from './lib/utils';
 
 export interface Cabin {
   id: string;
@@ -348,7 +349,7 @@ export const useStore = create<AppState>()(
       setBoats: (boats, fileName) => set({ boats, fileName }),
 
       addTab: () => set((state) => {
-        const id = crypto.randomUUID();
+        const id = safeUUID();
         const name = `Client ${state.tabs.length + 1}`;
         return {
           tabs: [...state.tabs, createDefaultTab(id, name)],
@@ -549,7 +550,7 @@ export const useStore = create<AppState>()(
       addNote: (note) => set((state) => ({
         savedNotes: [
           ...state.savedNotes,
-          { ...note, id: crypto.randomUUID(), createdAt: Date.now(), label: 'None', isChecked: false }
+          { ...note, id: safeUUID(), createdAt: Date.now(), label: 'None', isChecked: false }
         ]
       })),
       updateNote: (id, content) => set((state) => ({

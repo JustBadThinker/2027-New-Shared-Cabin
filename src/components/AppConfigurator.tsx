@@ -1699,14 +1699,14 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
                         </span>
                       </div>
                       <span className="text-[9px] font-mono px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                        {savedNotes.length} {savedNotes.length === 1 ? 'boat' : 'boats'} in notepad
+                        {savedNotes.length} {savedNotes.length === 1 ? 'boat' : 'boats'} stored
                       </span>
                     </div>
 
                     <p className="text-[10px] text-muted-foreground leading-relaxed">
                       {language === 'FR'
-                        ? 'Les liens de disponibilité sont conçus pour regrouper plusieurs propositions de bateaux enregistrés dans votre bloc-notes personnel (Personal Notepad).'
-                        : 'Share links create temporary mobile catalog links comparing boats and cabins saved in your Personal Notepad.'}
+                        ? 'Les liens de disponibilité sont conçus pour regrouper plusieurs propositions de bateaux enregistrés dans Stored Boats.'
+                        : 'Share links create temporary mobile catalog links comparing boats and cabins saved in Stored Boats.'}
                     </p>
 
                     <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -1718,7 +1718,7 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
                         }}
                         disabled={savedNotes.length === 0}
                         className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-                        title={savedNotes.length === 0 ? "Save boats to your Personal Notepad first" : "Generate share link"}
+                        title={savedNotes.length === 0 ? "Save boats to Stored Boats first" : "Generate share link"}
                       >
                         <Link2 className="w-3.5 h-3.5" />
                         <span>{language === 'FR' ? `Générer un lien (${savedNotes.length})` : `Generate Link (${savedNotes.length})`}</span>

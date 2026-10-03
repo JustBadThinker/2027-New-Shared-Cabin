@@ -30,10 +30,10 @@ export const CabinList: React.FC = () => {
 
   const selectedBoat = boats.find(b => b.name === selectedBoatName);
 
-  if (!selectedBoat) return null;
-
   // Listen to 1-9 keyboard hotkeys to select/toggle cabins
   React.useEffect(() => {
+    if (!selectedBoat) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeEl = document.activeElement;
       const isInput = activeEl && (
@@ -64,6 +64,8 @@ export const CabinList: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedBoat, selectedCabinIds, unavailableCabinIds, setSelectedCabinIds]);
+
+  if (!selectedBoat) return null;
 
   const handleDecrementCabin = (id: string) => {
     const { count = 1 } = cabinSelections[id] || {};

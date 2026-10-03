@@ -19,7 +19,9 @@ import {
   createShareLinkSnapshot,
   buildWhatsAppLink,
   parseNoteToBoatSnapshot,
-  getWiredImages
+  getWiredImages,
+  getPublicShareUrl,
+  sanitizeForFirestore
 } from '../lib/shareService';
 import { copyTextToClipboard, translateDate } from '../lib/utils';
 import { 
@@ -90,18 +92,18 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
   const selectedBoat = boats.find(b => b.name === selectedBoatName);
   const selectedCabins = selectedBoat?.cabins.filter(c => (selectedCabinIds || []).includes(c.id)) || [];
 
-  // Build selectable boat items ONLY from Personal Notepad
+  // Build selectable boat items ONLY from Stored Boats
   const availableBoatItems = useMemo<AvailableBoatItem[]>(() => {
     const items: AvailableBoatItem[] = [];
 
-    // Boats exclusively from Personal Notepad
+    // Boats exclusively from Stored Boats
     savedNotes.forEach((note) => {
       const parsed = parseNoteToBoatSnapshot(note, boats, kicFiles, lebaliblogFiles);
       if (parsed && parsed.cabins && parsed.cabins.length > 0) {
         items.push({
           id: `note-${note.id}`,
           source: 'notepad',
-          sourceTitle: note.clientName ? `Notepad (${note.clientName})` : 'Personal Notepad',
+          sourceTitle: note.clientName ? `Stored Boat (${note.clientName})` : 'Stored Boat',
           snapshot: parsed
         });
       }
@@ -233,18 +235,18 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
         language
       );
 
-      const snapshot: ShareLinkSnapshot = {
+      const snapshot: ShareLinkSnapshot = sanitizeForFirestore({
         shareId,
         boats: boatSnapshots,
         // Flat backwards compatibility fields
         boatName: primaryBoat.boatName,
-        itinerary: primaryBoat.itinerary,
+        itinerary: primaryBoat.itinerary || '',
         dates: primaryBoat.dates,
-        duration: primaryBoat.duration,
-        departure: primaryBoat.departure,
+        duration: primaryBoat.duration || '',
+        departure: primaryBoat.departure || '',
         cabins: primaryCabins,
-        limitedServiceNote: primaryBoat.limitedServiceNote,
-        fuelSurcharge: primaryBoat.fuelSurcharge,
+        limitedServiceNote: primaryBoat.limitedServiceNote || '',
+        fuelSurcharge: primaryBoat.fuelSurcharge || '',
 
         language,
         status: 'active',
@@ -254,14 +256,15 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
         whatsappBusinessName: whatsappConfig.businessName,
         whatsappCtaCaption: ctaCaption.trim() || 'Ask About This Boat',
         whatsappMessage: finalMessage
-      };
+      });
 
       const saveRes = await createShareLinkSnapshot(snapshot);
       if (!saveRes.cloudSynced) {
         console.warn('Cloud sync took longer or deferred, saved to local cache:', saveRes.error);
+        setError(`Warning: Cloud database synchronization is pending (${saveRes.error || 'Network latency'}). Link is active on this browser.`);
       }
 
-      const shareUrl = `${window.location.origin}/share/${shareId}`;
+      const shareUrl = getPublicShareUrl(shareId);
       setGeneratedLink({ id: shareId, url: shareUrl });
     } catch (err: any) {
       setError(err?.message || 'Failed to create share link.');
@@ -302,7 +305,7 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
               Generate Notepad Availability Link
             </h3>
             <p className="text-xs text-[#a69a84]">
-              Creates a mobile catalog link with swipeable carousels for the boats compiled in your Personal Notepad.
+              Creates a mobile catalog link with swipeable carousels for the boats compiled in your Stored Boats.
             </p>
           </div>
         </div>
@@ -508,7 +511,7 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
 
                 {availableBoatItems.length === 0 && (
                   <div className="p-4 text-center text-xs text-[#a69a84] italic">
-                    No boats found in your Personal Notepad. Save boat proposals to your Personal Notepad first to generate an availability link.
+                    No boats found in your Stored Boats. Save boat proposals to Stored Boats first to generate an availability link.
                   </div>
                 )}
               </div>

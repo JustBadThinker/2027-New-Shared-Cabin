@@ -320,13 +320,13 @@ ${cabinList}`;
 
       boatSnapshot = {
         boatName: selectedBoat.name,
-        itinerary: itin,
-        dates: translateDate(dates, language) || dates,
-        duration: dur,
-        departure: dep,
+        itinerary: itin || '',
+        dates: translateDate(dates, language) || dates || '',
+        duration: dur || '',
+        departure: dep || '',
         cabins: cabinsSnapshots,
-        fuelSurcharge: fuel,
-        limitedServiceNote: note
+        fuelSurcharge: fuel || '',
+        limitedServiceNote: note || ''
       };
     }
 
@@ -360,10 +360,10 @@ ${cabinList}`;
               "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
               saved ? "bg-amber-500 text-white" : "bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground"
             )}
-            title="Save to Notepad"
+            title="Store Boat"
           >
             {saved ? <Check className="w-4 h-4" /> : <Bookmark className="w-4 h-4" />}
-            {saved ? 'Saved' : 'Save to Notepad'}
+            {saved ? 'Stored!' : 'Store Boat'}
           </button>
           <button 
             type="button"

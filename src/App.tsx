@@ -18,6 +18,7 @@ import { CustomerSharePage } from './components/CustomerSharePage';
 import { ShareLinkModal } from './components/ShareLinkModal';
 import { ShareLinksManager } from './components/ShareLinksManager';
 import { WhatsAppConfigModal } from './components/WhatsAppConfigModal';
+import { syncLocalLinksToCloud } from './lib/shareService';
 import { useStore } from './store';
 import { cn, matchShortcut } from './lib/utils';
 import { Ship, Info, LogIn, LogOut, Check, AlertCircle, FileSpreadsheet, Image as ImageIcon, Loader2, HelpCircle, Link2, MessageCircle } from 'lucide-react';
@@ -124,6 +125,9 @@ export default function App() {
     window.addEventListener('open-share-modal', handleOpenShare);
     window.addEventListener('open-share-manager', handleOpenManager);
     window.addEventListener('open-whatsapp-config', handleOpenWhatsApp);
+
+    // Automatically sync any local-only links to Firestore now that rules are active
+    syncLocalLinksToCloud().catch(() => {});
 
     return () => {
       window.removeEventListener('popstate', handleLocation);
