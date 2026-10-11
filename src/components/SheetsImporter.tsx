@@ -10,6 +10,7 @@ import {
   FileSpreadsheet,
   Sparkles
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import { useStore } from '../store';
 import { googleSignIn, getAccessToken, logout } from '../lib/firebase';
 import { processWorkbookData } from '../parser';
@@ -39,6 +40,7 @@ export const SheetsImporter: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const [isDirectMode, setIsDirectMode] = useState(false);
 
   // Auto-fill URL from active sheets config if loaded
   useEffect(() => {
@@ -58,9 +60,15 @@ export const SheetsImporter: React.FC = () => {
       if (result) {
         setGoogleUser(result.user, result.accessToken);
         fetchDriveImages(result.accessToken);
+        
+        // Auto-fetch spreadsheet info if URL or ID is present
+        const id = extractSpreadsheetId(url) || sheetsConfig.spreadsheetId;
+        if (id) {
+          await fetchSheetNames(id, result.accessToken);
+        }
       }
     } catch (err: any) {
-      if (err.message.includes('closed before completion')) {
+      if (err.message?.includes('closed before completion')) {
         setError('The sign-in window was closed. If you saw an "Access Blocked" error, make sure you are using a permitted account or that the developer has enabled access for you.');
       } else {
         setError(err.message || 'Login failed. Please try again.');
@@ -77,15 +85,16 @@ export const SheetsImporter: React.FC = () => {
 
   const extractSpreadsheetId = (input: string) => {
     if (!input) return null;
-    if (input.match(/^[a-zA-Z0-9-_]{15,}$/)) return input;
-    const match = input.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    const trimmed = input.trim();
+    if (trimmed.match(/^[a-zA-Z0-9-_]{15,}$/)) return trimmed;
+    const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
     return match ? match[1] : null;
   };
 
-  const fetchSheetNames = async (spreadsheetId: string) => {
-    const token = getAccessToken();
+  const fetchSheetNames = async (spreadsheetId: string, customToken?: string) => {
+    const token = customToken || getAccessToken() || googleToken;
     if (!token) {
-      handleLogin();
+      await handleLogin();
       return;
     }
 
@@ -93,52 +102,155 @@ export const SheetsImporter: React.FC = () => {
     setError(null);
 
     try {
+      let names: string[] = [];
       const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      if (!res.ok) throw new Error('Failed to fetch spreadsheet info. Verify spreadsheet access permissions.');
-      
-      const data = await res.json();
-      const names = data.sheets.map((s: any) => s.properties.title);
+      if (res.ok) {
+        const data = await res.json();
+        names = (data.sheets || []).map((s: any) => s.properties?.title).filter(Boolean);
+      } else {
+        // Fallback for public sheets if OAuth scope has restrictions
+        try {
+          const gvizRes = await fetch(`https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv`);
+          if (gvizRes.ok) {
+            names = ['Sheet1'];
+          }
+        } catch (_) {}
+
+        if (names.length === 0) {
+          const errJson = await res.json().catch(() => null);
+          const errMsg = errJson?.error?.message;
+          if (res.status === 401) {
+            throw new Error('Google authorization token expired. Please click "Sign in with Google" to re-authenticate.');
+          } else if (res.status === 403) {
+            throw new Error(`Google Sheets Access Denied: ${errMsg || 'Your account does not have permission to view this spreadsheet. Verify sheet permissions or account access.'}`);
+          } else if (res.status === 404) {
+            throw new Error('Spreadsheet not found. Please verify the URL or ID.');
+          } else {
+            throw new Error(errMsg || `Failed to fetch spreadsheet info (HTTP error ${res.status}).`);
+          }
+        }
+      }
+
       setAvailableSheets(names);
       setSheetsConfig({ spreadsheetId });
       
-      if (names.length > 0 && !sheetsConfig.sheetName) {
-        setSheetsConfig({ sheetName: names[0] });
+      // Select the first valid sheet if current selection is invalid
+      if (names.length > 0) {
+        const currentName = sheetsConfig.sheetName;
+        if (!currentName || !names.includes(currentName)) {
+          setSheetsConfig({ sheetName: names[0] });
+        }
       }
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || 'Failed to fetch spreadsheet info.');
     } finally {
       setLoading(false);
     }
   };
 
-  const importData = async (spreadsheetId: string, sheetName: string) => {
-    const token = getAccessToken();
-    if (!token) return;
+  const importData = async (spreadsheetId: string, sheetName: string, customToken?: string) => {
+    const token = customToken || getAccessToken() || googleToken;
+    if (!token) {
+      await handleLogin();
+      return;
+    }
 
     setLoading(true);
     setError(null);
 
     try {
-      const range = `${sheetName}!A:Z`;
-      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`, {
+      if (!spreadsheetId) {
+        throw new Error('Please enter a valid Google Sheets URL.');
+      }
+      if (!sheetName) {
+        throw new Error('Please select a sheet tab to import.');
+      }
+
+      const escapedSheet = sheetName.replace(/'/g, "''");
+      const quotedSheet = `'${escapedSheet}'`;
+
+      // 1. Primary endpoint: Fetch full sheet data without column cutoff
+      let res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(quotedSheet)}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      if (!res.ok) throw new Error('Failed to fetch sheet data.');
-
-      const data = await res.json();
-      if (!data.values || data.values.length === 0) {
-        throw new Error('This specific sheet is empty or contains no valid rows.');
+      // 2. Fallback endpoint: Fetch with A:ZZ range if single-token range is rejected
+      if (!res.ok) {
+        const fallbackRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`${quotedSheet}!A:ZZ`)}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (fallbackRes.ok) {
+          res = fallbackRes;
+        }
       }
 
-      const boats = processWorkbookData(data.values);
+      // 3. Fallback endpoint: Plain unquoted range if name has no special characters
+      if (!res.ok && !sheetName.includes(' ') && !sheetName.includes("'")) {
+        const plainRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (plainRes.ok) {
+          res = plainRes;
+        }
+      }
+
+      let rawRows: any[][] = [];
+
+      if (res.ok) {
+        const data = await res.json();
+        rawRows = data.values || [];
+      } else {
+        // Fallback for public / link-shared sheets
+        try {
+          const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+          const csvRes = await fetch(csvUrl);
+          if (csvRes.ok) {
+            const csvText = await csvRes.text();
+            if (csvText && csvText.trim()) {
+              const workbook = XLSX.read(csvText, { type: 'string' });
+              const firstSheetName = workbook.SheetNames[0];
+              if (firstSheetName && workbook.Sheets[firstSheetName]) {
+                rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { header: 1 }) as any[][];
+              }
+            }
+          }
+        } catch (_) {}
+
+        if (rawRows.length === 0) {
+          const errJson = await res.json().catch(() => null);
+          const errMsg = errJson?.error?.message;
+          if (res.status === 401) {
+            throw new Error('Google authorization token expired. Please click "Sign in with Google" to re-authenticate.');
+          } else if (res.status === 403) {
+            throw new Error(`Google Sheets Access Denied: ${errMsg || 'Your account does not have permission to view this spreadsheet. Please make sure this sheet is shared with your email.'}`);
+          } else if (res.status === 404) {
+            throw new Error('Spreadsheet or sheet tab not found. Please verify the URL.');
+          } else {
+            throw new Error(errMsg || `Failed to fetch sheet data (HTTP error ${res.status}).`);
+          }
+        }
+      }
+
+      if (!rawRows || rawRows.length === 0) {
+        throw new Error(`Sheet tab "${sheetName}" is empty or contains no rows.`);
+      }
+
+      const boats = processWorkbookData(rawRows);
+      if (boats.length === 0) {
+        throw new Error(`No boat or cabin data could be parsed from sheet tab "${sheetName}". Please verify the columns in your sheet.`);
+      }
+
       setBoats(boats, `Google Sheet: ${sheetName}`);
-      setSheetsConfig({ lastSynced: new Date().toISOString() });
+      setSheetsConfig({ 
+        spreadsheetId,
+        sheetName,
+        lastSynced: new Date().toISOString() 
+      });
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || 'Failed to fetch sheet data.');
     } finally {
       setLoading(false);
     }
@@ -163,7 +275,7 @@ export const SheetsImporter: React.FC = () => {
     );
   }
 
-  if (!googleUser) {
+  if (!googleUser && !isDirectMode) {
     return (
       <div className="flex flex-col items-center gap-6 p-10 bg-card/50 backdrop-blur-sm border border-border rounded-3xl text-center">
         <div className="p-4 bg-primary/5 rounded-full ring-8 ring-primary/5">
@@ -191,6 +303,16 @@ export const SheetsImporter: React.FC = () => {
           </div>
           <span className="gsi-material-button-contents">Sign in with Google</span>
         </button>
+
+        <div className="pt-2 border-t border-border/40 w-full max-w-xs">
+          <button
+            type="button"
+            onClick={() => setIsDirectMode(true)}
+            className="text-xs text-primary hover:underline font-semibold cursor-pointer"
+          >
+            Or paste spreadsheet web link directly →
+          </button>
+        </div>
       </div>
     );
   }
@@ -229,10 +351,21 @@ export const SheetsImporter: React.FC = () => {
         <motion.div 
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-center gap-3 p-4 bg-destructive/5 text-destructive rounded-2xl border border-destructive/10 text-xs"
+          className="flex items-center justify-between flex-wrap gap-3 p-4 bg-destructive/5 text-destructive rounded-2xl border border-destructive/10 text-xs"
         >
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          {error}
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+          {(error.includes('expired') || error.includes('token') || error.includes('re-authenticate')) && (
+            <button
+              type="button"
+              onClick={handleLogin}
+              className="px-3 py-1.5 bg-destructive text-destructive-foreground rounded-xl text-[10px] font-bold uppercase tracking-wider hover:opacity-90 transition-opacity cursor-pointer"
+            >
+              Sign In Again
+            </button>
+          )}
         </motion.div>
       )}
 

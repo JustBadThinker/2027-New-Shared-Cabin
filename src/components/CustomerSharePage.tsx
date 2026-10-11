@@ -9,6 +9,7 @@ import {
   isShareLinkExpired,
   FALLBACK_CABIN_IMAGES
 } from '../lib/shareService';
+import { copyFormattedToClipboard, formatTemplateToEmailHtml } from '../lib/utils';
 import { 
   ExternalLink, 
   MessageCircle, 
@@ -412,16 +413,8 @@ export const CustomerSharePage: React.FC<CustomerSharePageProps> = ({ shareId })
   // Copy template text
   const handleCopyTemplateText = async (text: string, key: string) => {
     try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
+      const emailHtml = formatTemplateToEmailHtml(text);
+      await copyFormattedToClipboard(text, emailHtml);
       setCopiedTemplateKey(key);
       setTimeout(() => setCopiedTemplateKey(null), 2000);
     } catch (err) {

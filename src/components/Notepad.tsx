@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Copy, Check, Trash2, Edit3, Save, LayoutGrid, FileText, Clock, AlertCircle, CheckSquare, Square, GripVertical, ArrowUpNarrowWide, RotateCcw, Link2, Share2, RefreshCw, Languages } from 'lucide-react';
 import { useStore, SavedNote, NoteLabel } from '../store';
-import { cn, copyTextToClipboard } from '../lib/utils';
+import { cn, copyTextToClipboard, copyFormattedToClipboard, formatTemplateToEmailHtml } from '../lib/utils';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { convertStoredNoteFormat } from '../lib/shareService';
 
@@ -86,7 +86,12 @@ export const Notepad: React.FC = () => {
   };
 
   const handleCopy = async (id: string, text: string) => {
-    await copyTextToClipboard(text);
+    if (id === 'all' || view === 'UNIFIED' || text.includes('**') || text.includes('http://') || text.includes('https://')) {
+      const emailHtml = formatTemplateToEmailHtml(text);
+      await copyFormattedToClipboard(text, emailHtml);
+    } else {
+      await copyTextToClipboard(text);
+    }
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };

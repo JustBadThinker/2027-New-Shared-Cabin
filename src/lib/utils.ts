@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { getAccessToken } from './firebase';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -145,26 +146,255 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
 }
 
 /**
+ * Copies rich formatted content to the clipboard (both HTML and plain text fallback).
+ * In email clients (like Gmail, Outlook, Apple Mail), the HTML with clickable links will be pasted.
+ */
+export async function copyFormattedToClipboard(plainText: string, htmlText?: string): Promise<boolean> {
+  if (htmlText) {
+    // 1. Try modern Async Clipboard API
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.write === 'function') {
+      try {
+        const textBlob = new Blob([plainText], { type: 'text/plain' });
+        const htmlBlob = new Blob([htmlText], { type: 'text/html' });
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/html': htmlBlob,
+            'text/plain': textBlob,
+          })
+        ]);
+        return true;
+      } catch (err) {
+        console.warn("Modern ClipboardItem write failed, trying DOM copy event fallback:", err);
+      }
+    }
+
+    // 2. Fallback via copy event listener (supported widely in all browser environments and iframes)
+    try {
+      let copySuccess = false;
+      const handler = (e: ClipboardEvent) => {
+        e.preventDefault();
+        e.clipboardData?.setData('text/html', htmlText);
+        e.clipboardData?.setData('text/plain', plainText);
+        copySuccess = true;
+      };
+      document.addEventListener('copy', handler);
+      document.execCommand('copy');
+      document.removeEventListener('copy', handler);
+      if (copySuccess) return true;
+    } catch (domErr) {
+      console.warn("DOM copy fallback failed:", domErr);
+    }
+  }
+
+  return copyTextToClipboard(plainText);
+}
+
+/**
+ * Transforms template text into rich HTML for email clients:
+ * - Keeps bold headers `**Header**` as `<b>Header</b>`
+ * - Renders each URL as an active, clickable `<a href="URL">URL</a>` link (where the anchor text is strictly the URL itself, NOT cabin name)
+ * - Properly handles line breaks and clean email font styling
+ */
+export function formatTemplateToEmailHtml(text: string): string {
+  if (!text) return '';
+  
+  const lines = text.split('\n');
+  const formattedLines = lines.map((line) => {
+    // Escape HTML special characters
+    let escaped = line
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Convert markdown **bold** to <b>bold</b>
+    escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+
+    // Auto-link URLs as clickable hyperlinks, where the link text is strictly the URL itself
+    const urlRegex = /(https?:\/\/[^\s<>"']+)/g;
+    escaped = escaped.replace(urlRegex, (match) => {
+      let cleanUrl = match;
+      let trailingPunct = '';
+      const trailMatch = cleanUrl.match(/[.,;!?]+$/);
+      if (trailMatch) {
+        trailingPunct = trailMatch[0];
+        cleanUrl = cleanUrl.slice(0, -trailingPunct.length);
+      }
+      return `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer" style="color: #2563eb; text-decoration: underline; word-break: break-all;">${cleanUrl}</a>${trailingPunct}`;
+    });
+
+    return escaped;
+  });
+
+  return `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1f2937;">${formattedLines.join('<br>\n')}</div>`;
+}
+
+/**
+ * Converts any Image/Blob to standard image/png Blob for clipboard write support.
+ */
+async function convertBlobToPng(blob: Blob): Promise<Blob> {
+  if (blob.type === 'image/png') {
+    return blob;
+  }
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(blob);
+      const canvas = document.createElement('canvas');
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(bmp, 0, 0);
+        const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+        if (png) return png;
+      }
+    } catch (_) {}
+  }
+  return new Promise<Blob>((resolve, reject) => {
+    const objUrl = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objUrl);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return reject(new Error('Canvas 2D context unavailable'));
+      ctx.drawImage(img, 0, 0);
+      canvas.toBlob((p) => {
+        if (p) resolve(p);
+        else reject(new Error('PNG conversion failed'));
+      }, 'image/png');
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objUrl);
+      reject(new Error('Image decode failed'));
+    };
+    img.src = objUrl;
+  });
+}
+
+async function writeImageBlobToClipboard(blob: Blob): Promise<boolean> {
+  try {
+    const pngBlob = await convertBlobToPng(blob);
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.write === 'function') {
+      try {
+        await navigator.clipboard.write([
+          new ClipboardItem({ 'image/png': pngBlob })
+        ]);
+        return true;
+      } catch (_) {
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({ 'image/png': Promise.resolve(pngBlob) })
+          ]);
+          return true;
+        } catch (e2) {
+          console.warn("ClipboardItem write failed:", e2);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("PNG blob conversion or clipboard write failed:", err);
+  }
+  return false;
+}
+
+function extractDriveFileId(val: string): string | null {
+  if (!val) return null;
+  const dMatch = val.match(/\/file\/d\/([a-zA-Z0-9_-]{20,60})/);
+  if (dMatch && dMatch[1]) return dMatch[1];
+  const idMatch = val.match(/[&?]id=([a-zA-Z0-9_-]{20,60})/);
+  if (idMatch && idMatch[1]) return idMatch[1];
+  if (/^[a-zA-Z0-9_-]{20,60}$/.test(val) && !val.startsWith('http')) return val;
+  return null;
+}
+
+/**
  * Copies an image from a URL or file ID directly to the user's clipboard as an actual image blob.
+ * Uses Google Drive API when authenticated, internal image proxy, and fallback mechanisms.
  * Returns a promise with 'IMAGE' | 'LINK' | 'FAILED' status.
  */
-export async function copyImageToClipboard(fileIdOrUrl: string): Promise<'IMAGE' | 'LINK' | 'FAILED'> {
+export async function copyImageToClipboard(fileIdOrUrl: string, fallbackThumbnailUrl?: string): Promise<'IMAGE' | 'LINK' | 'FAILED'> {
   let directUrl = (fileIdOrUrl.startsWith('http://') || fileIdOrUrl.startsWith('https://'))
     ? fileIdOrUrl
     : `https://lh3.googleusercontent.com/d/${fileIdOrUrl}`;
 
-  if (fileIdOrUrl.startsWith('http://') || fileIdOrUrl.startsWith('https://')) {
-    const fileDMatch = fileIdOrUrl.match(/\/file\/d\/([a-zA-Z0-9_-]{25,50})/);
-    if (fileDMatch && fileDMatch[1]) {
-      directUrl = `https://lh3.googleusercontent.com/d/${fileDMatch[1]}`;
-    } else {
-      const idParamMatch = fileIdOrUrl.match(/[&?]id=([a-zA-Z0-9_-]{25,50})/);
-      if (idParamMatch && idParamMatch[1]) {
-        directUrl = `https://lh3.googleusercontent.com/d/${idParamMatch[1]}`;
+  const driveId = extractDriveFileId(fileIdOrUrl);
+  if (driveId) {
+    directUrl = `https://lh3.googleusercontent.com/d/${driveId}`;
+  }
+
+  // 1. Try Google Drive API with OAuth token if drive file
+  if (driveId) {
+    const token = getAccessToken();
+    if (token) {
+      try {
+        const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${driveId}?alt=media`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (driveRes.ok) {
+          const rawBlob = await driveRes.blob();
+          const written = await writeImageBlobToClipboard(rawBlob);
+          if (written) return 'IMAGE';
+        }
+      } catch (err) {
+        console.warn("Drive API media fetch failed, trying proxy:", err);
       }
     }
   }
 
+  // 2. Try Vite server image proxy (/api/proxy-image)
+  try {
+    const proxyUrl = `/api/proxy-image?id=${encodeURIComponent(driveId || '')}&url=${encodeURIComponent(directUrl)}`;
+    const headers: Record<string, string> = {};
+    const token = getAccessToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const proxyRes = await fetch(proxyUrl, { headers });
+    if (proxyRes.ok) {
+      const ct = proxyRes.headers.get('content-type') || '';
+      if (ct.startsWith('image/') || ct.startsWith('application/octet-stream')) {
+        const rawBlob = await proxyRes.blob();
+        const written = await writeImageBlobToClipboard(rawBlob);
+        if (written) return 'IMAGE';
+      }
+    }
+  } catch (err) {
+    console.warn("Vite image proxy fetch failed, trying fallback:", err);
+  }
+
+  // 3. Try high-performance CORS image proxy (wsrv.nl)
+  try {
+    const wsrvUrl = `https://wsrv.nl/?url=${encodeURIComponent(directUrl)}`;
+    const wsrvRes = await fetch(wsrvUrl);
+    if (wsrvRes.ok) {
+      const ct = wsrvRes.headers.get('content-type') || '';
+      if (ct.startsWith('image/')) {
+        const rawBlob = await wsrvRes.blob();
+        const written = await writeImageBlobToClipboard(rawBlob);
+        if (written) return 'IMAGE';
+      }
+    }
+  } catch (err) {
+    console.warn("Wsrv proxy fetch failed:", err);
+  }
+
+  // 4. Try fallback thumbnail URL if provided
+  if (fallbackThumbnailUrl) {
+    try {
+      const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(fallbackThumbnailUrl)}`;
+      const token = getAccessToken();
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      const fbRes = await fetch(proxyUrl, { headers });
+      if (fbRes.ok) {
+        const rawBlob = await fbRes.blob();
+        const written = await writeImageBlobToClipboard(rawBlob);
+        if (written) return 'IMAGE';
+      }
+    } catch (_) {}
+  }
+
+  // 5. Try canvas drawImage with crossOrigin
   try {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -186,21 +416,19 @@ export async function copyImageToClipboard(fileIdOrUrl: string): Promise<'IMAGE'
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
     if (!blob) throw new Error("Failed to capture image blob data");
 
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        [blob.type]: blob
-      })
-    ]);
-    return 'IMAGE';
+    const written = await writeImageBlobToClipboard(blob);
+    if (written) return 'IMAGE';
   } catch (err) {
-    console.warn("Direct image copy failed, trying clipboard fallback to link", err);
-    const success = await copyTextToClipboard(directUrl);
-    if (success) {
-      return 'LINK';
-    } else {
-      console.error("Link backup copy failed completely");
-      return 'FAILED';
-    }
+    console.warn("All direct image copy methods failed, falling back to link:", err);
+  }
+
+  // Backup fallback: copy direct URL
+  const success = await copyTextToClipboard(directUrl);
+  if (success) {
+    return 'LINK';
+  } else {
+    console.error("Link backup copy failed completely");
+    return 'FAILED';
   }
 }
 

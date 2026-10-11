@@ -116,7 +116,7 @@ export const LivePreviewPanel: React.FC = () => {
   }, [selectedLiveFile, selectedBoat, language]);
 
   const handleCopyImage = async (file: DriveFile) => {
-    const result = await copyImageToClipboard(file.id);
+    const result = await copyImageToClipboard(file.id, file.thumbnailLink);
     if (result === 'IMAGE') {
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 2000);
@@ -124,7 +124,7 @@ export const LivePreviewPanel: React.FC = () => {
   };
 
   const handleCopyImageFullscreen = async (file: DriveFile) => {
-    const result = await copyImageToClipboard(file.id);
+    const result = await copyImageToClipboard(file.id, file.thumbnailLink);
     if (result === 'IMAGE') {
       setFullscreenCopyFeedback(true);
       setTimeout(() => setFullscreenCopyFeedback(false), 2000);

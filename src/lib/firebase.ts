@@ -68,10 +68,11 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 
 const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
+provider.addScope('https://www.googleapis.com/auth/drive.readonly');
 provider.addScope('https://www.googleapis.com/auth/drive.metadata.readonly');
 
 let isSigningIn = false;
-let cachedAccessToken: string | null = null;
+let cachedAccessToken: string | null = (typeof window !== 'undefined' ? sessionStorage.getItem('google_access_token') || localStorage.getItem('google_access_token') : null);
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string | null) => void,
@@ -79,11 +80,17 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user) => {
     if (user) {
+      if (!cachedAccessToken && typeof window !== 'undefined') {
+        cachedAccessToken = sessionStorage.getItem('google_access_token') || localStorage.getItem('google_access_token');
+      }
       if (onAuthSuccess) {
         onAuthSuccess(user, cachedAccessToken);
       }
     } else {
       cachedAccessToken = null;
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('google_access_token');
+      }
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -99,6 +106,12 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.setItem('google_access_token', cachedAccessToken);
+        localStorage.setItem('google_access_token', cachedAccessToken);
+      } catch (_) {}
+    }
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     if (error.code === 'auth/popup-closed-by-user') {
@@ -122,11 +135,23 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
   }
 };
 
-export const getAccessToken = () => cachedAccessToken;
+export const getAccessToken = () => {
+  if (cachedAccessToken) return cachedAccessToken;
+  if (typeof window !== 'undefined') {
+    return sessionStorage.getItem('google_access_token') || localStorage.getItem('google_access_token');
+  }
+  return null;
+};
 
 export const logout = async () => {
   await auth.signOut();
   cachedAccessToken = null;
+  if (typeof window !== 'undefined') {
+    try {
+      sessionStorage.removeItem('google_access_token');
+      localStorage.removeItem('google_access_token');
+    } catch (_) {}
+  }
 };
 
 export const DEFAULT_WHITELIST = [

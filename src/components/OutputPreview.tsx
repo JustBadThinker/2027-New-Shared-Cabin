@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Copy, Check, Bookmark, Link2, Share2 } from 'lucide-react';
 import { useStore, Cabin } from '../store';
-import { cn, translateDate, isValidLink, copyTextToClipboard } from '../lib/utils';
+import { cn, translateDate, isValidLink, copyTextToClipboard, copyFormattedToClipboard, formatTemplateToEmailHtml } from '../lib/utils';
 import { resolveCabinImages, resolveCabinImageUrl, extractCabinFeatures, getCleanWebsiteUrl, getWiredImages } from '../lib/shareService';
 import { BoatSnapshot, CabinSnapshot } from '../types/share';
 import { motion, AnimatePresence } from 'motion/react';
@@ -237,7 +237,12 @@ ${cabinList}`;
   fullOutputRef.current = fullOutput;
 
   const handleCopy = async () => {
-    await copyTextToClipboard(fullOutputRef.current);
+    if (formattingMode === 'EMAIL') {
+      const emailHtml = formatTemplateToEmailHtml(fullOutputRef.current);
+      await copyFormattedToClipboard(fullOutputRef.current, emailHtml);
+    } else {
+      await copyTextToClipboard(fullOutputRef.current);
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -381,9 +386,37 @@ ${cabinList}`;
 
       <div className="relative group">
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-background/50 pointer-events-none rounded-2xl" />
-        <pre className="w-full p-6 rounded-2xl border border-border bg-card overflow-x-auto font-mono text-sm leading-relaxed whitespace-pre-wrap min-h-[400px] max-h-[650px] custom-scrollbar">
-          {fullOutput}
-        </pre>
+        <div className="w-full p-6 rounded-2xl border border-border bg-card overflow-x-auto font-mono text-sm leading-relaxed whitespace-pre-wrap min-h-[400px] max-h-[650px] custom-scrollbar">
+          {formattingMode === 'EMAIL' ? (
+            fullOutput.split('\n').map((line, idx) => {
+              const urlRegex = /(https?:\/\/[^\s<>"']+)/g;
+              const parts = line.split(urlRegex);
+              return (
+                <div key={idx} className="min-h-[1.4em]">
+                  {parts.map((part, pIdx) => {
+                    if (urlRegex.test(part)) {
+                      return (
+                        <a
+                          key={pIdx}
+                          href={part}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline hover:opacity-80 break-all cursor-pointer font-medium"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {part}
+                        </a>
+                      );
+                    }
+                    return <span key={pIdx}>{part}</span>;
+                  })}
+                </div>
+              );
+            })
+          ) : (
+            <pre className="font-mono text-sm whitespace-pre-wrap">{fullOutput}</pre>
+          )}
+        </div>
       </div>
       
       <p className="text-[10px] text-center text-muted-foreground uppercase tracking-widest">

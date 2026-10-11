@@ -596,7 +596,7 @@ export const MediaGallery: React.FC = () => {
 
   const handleCopyImage = async (file: DriveFile, event: React.MouseEvent) => {
     event.stopPropagation();
-    const result = await copyImageToClipboard(file.id);
+    const result = await copyImageToClipboard(file.id, file.thumbnailLink);
     setCopyFeedback(prev => ({ ...prev, [file.id]: result }));
     setTimeout(() => {
       setCopyFeedback(prev => ({ ...prev, [file.id]: null }));
@@ -604,7 +604,7 @@ export const MediaGallery: React.FC = () => {
   };
 
   const handleCopyImageFromModal = async (file: DriveFile) => {
-    const result = await copyImageToClipboard(file.id);
+    const result = await copyImageToClipboard(file.id, file.thumbnailLink);
     setModalCopyFeedback(result);
     setTimeout(() => {
       setModalCopyFeedback(null);
