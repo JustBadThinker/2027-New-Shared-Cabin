@@ -160,6 +160,23 @@ export const DEFAULT_WHITELIST = [
   'reservation.lebaliblog@gmail.com'
 ];
 
+/**
+ * Official office accounts authorized for internal operational data & Drive Media Gallery.
+ */
+export const OFFICE_EMAILS = [
+  'reservation.kic@gmail.com',
+  'reservation.lebaliblog@gmail.com'
+];
+
+/**
+ * Verifies if an email address belongs to the authorized office accounts.
+ */
+export function isOfficeEmail(email?: string | null): boolean {
+  if (!email) return false;
+  const clean = email.trim().toLowerCase();
+  return OFFICE_EMAILS.some(office => office.toLowerCase() === clean);
+}
+
 export async function getWhitelistedEmails(): Promise<string[]> {
   try {
     const docRef = doc(db, 'config', 'whitelist');

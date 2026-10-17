@@ -27,7 +27,9 @@ import {
   Copy,
   Check,
   Clock,
-  RefreshCw
+  RefreshCw,
+  Globe,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -42,6 +44,13 @@ interface ImagePreviewState {
   boatName: string;
   cabinName: string;
   websiteUrl?: string;
+}
+
+interface WebPreviewModalState {
+  isOpen: boolean;
+  url: string;
+  boatName: string;
+  cabinName?: string;
 }
 
 export const CustomerSharePage: React.FC<CustomerSharePageProps> = ({ shareId }) => {
@@ -61,6 +70,10 @@ export const CustomerSharePage: React.FC<CustomerSharePageProps> = ({ shareId })
 
   // Image Preview Modal (Lightbox) state
   const [previewModal, setPreviewModal] = useState<ImagePreviewState | null>(null);
+
+  // Direct Interactive Web Modal (iframe browser for itinerary & cabin details)
+  const [webModal, setWebModal] = useState<WebPreviewModalState | null>(null);
+  const [webIframeLoading, setWebIframeLoading] = useState(true);
 
   // Copied feedback states
   const [copiedTemplateKey, setCopiedTemplateKey] = useState<string | null>(null);
@@ -96,20 +109,21 @@ export const CustomerSharePage: React.FC<CustomerSharePageProps> = ({ shareId })
     loadData();
   }, [shareId]);
 
-  // Handle keyboard events for image preview lightbox
+  // Handle keyboard events for image preview lightbox and web preview modal
   useEffect(() => {
-    if (!previewModal?.isOpen) return;
+    if (!previewModal?.isOpen && !webModal?.isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setPreviewModal(null);
-      } else if (e.key === 'ArrowLeft' && previewModal.images.length > 1) {
+        if (webModal?.isOpen) setWebModal(null);
+        if (previewModal?.isOpen) setPreviewModal(null);
+      } else if (previewModal?.isOpen && e.key === 'ArrowLeft' && previewModal.images.length > 1) {
         setPreviewModal(prev => {
           if (!prev) return null;
           const newIdx = prev.activeIndex === 0 ? prev.images.length - 1 : prev.activeIndex - 1;
           return { ...prev, activeIndex: newIdx };
         });
-      } else if (e.key === 'ArrowRight' && previewModal.images.length > 1) {
+      } else if (previewModal?.isOpen && e.key === 'ArrowRight' && previewModal.images.length > 1) {
         setPreviewModal(prev => {
           if (!prev) return null;
           const newIdx = prev.activeIndex === prev.images.length - 1 ? 0 : prev.activeIndex + 1;
@@ -120,7 +134,7 @@ export const CustomerSharePage: React.FC<CustomerSharePageProps> = ({ shareId })
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [previewModal]);
+  }, [previewModal, webModal]);
 
   // Normalize boats list (supports both new multi-boat snapshots and legacy single-boat snapshots)
   const boats: BoatSnapshot[] = useMemo(() => {
@@ -387,6 +401,18 @@ export const CustomerSharePage: React.FC<CustomerSharePageProps> = ({ shareId })
 
     touchStartXRef.current = null;
     touchStartYRef.current = null;
+  };
+
+  // Open Direct Web Modal (Interactive iframe browser)
+  const handleOpenWebModal = (url: string, boatName: string, cabinName?: string) => {
+    if (!url) return;
+    setWebIframeLoading(true);
+    setWebModal({
+      isOpen: true,
+      url,
+      boatName,
+      cabinName
+    });
   };
 
   // Open Image Lightbox
@@ -871,18 +897,28 @@ ${cabinLabel} : ${cabinVal}`;
                                 )}
                               </div>
 
-                              {/* Action: Open Cabin Webpage Button */}
+                              {/* Action: Open Cabin Webpage Button & In-Modal Interactive Direct Browse */}
                               {detailVal && (
-                                <div className="pt-2 border-t border-[#2e2a24]/80">
+                                <div className="pt-2 border-t border-[#2e2a24]/80 flex flex-col sm:flex-row gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenWebModal(detailVal, boat.boatName, cabinVal)}
+                                    className="flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-xs font-bold text-amber-300 transition-all cursor-pointer shadow-sm active:scale-[0.99]"
+                                    title={isFrench ? "Ouvrir les détails directement dans un navigateur modal" : "Browse itinerary and details directly inside interactive modal"}
+                                  >
+                                    <Globe className="w-3.5 h-3.5 text-amber-400" />
+                                    <span>{isFrench ? 'Aperçu Direct (Modal)' : 'Direct Preview (Modal)'}</span>
+                                  </button>
+
                                   <a
                                     href={detailVal}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="flex items-center justify-center gap-2 w-full py-3 px-4 rounded-xl bg-[#181614] hover:bg-[#282420] border border-[#2e2a24] hover:border-amber-400/40 text-xs font-semibold text-[#f0e9dc] transition-all group/btn cursor-pointer shadow-sm active:scale-[0.99]"
+                                    className="flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-[#181614] hover:bg-[#282420] border border-[#2e2a24] hover:border-amber-400/40 text-xs font-semibold text-[#f0e9dc] transition-all group/btn cursor-pointer shadow-sm active:scale-[0.99]"
                                   >
-                                    <ExternalLink className="w-4 h-4 text-amber-400 group-hover/btn:translate-x-0.5 transition-transform" />
+                                    <ExternalLink className="w-3.5 h-3.5 text-amber-400 group-hover/btn:translate-x-0.5 transition-transform" />
                                     <span>
-                                      {isFrench ? 'Voir la cabine sur le site officiel' : 'View Cabin Details on Website'}
+                                      {isFrench ? 'Site officiel' : 'Official Page'}
                                     </span>
                                   </a>
                                 </div>
@@ -1063,15 +1099,29 @@ ${cabinLabel} : ${cabinVal}`;
               className="max-w-4xl mx-auto w-full flex items-center justify-between gap-3 pt-2 border-t border-white/10"
             >
               {previewModal.websiteUrl ? (
-                <a
-                  href={previewModal.websiteUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-xs font-semibold text-white transition-all cursor-pointer"
-                >
-                  <ExternalLink className="w-4 h-4 text-amber-400" />
-                  <span>{isFrench ? 'Site officiel' : 'Official Page'}</span>
-                </a>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (previewModal.websiteUrl) {
+                        handleOpenWebModal(previewModal.websiteUrl, previewModal.boatName, previewModal.cabinName);
+                      }
+                    }}
+                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-xs font-bold text-amber-300 transition-all cursor-pointer"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{isFrench ? 'Aperçu Direct (Modal)' : 'Direct Web (Modal)'}</span>
+                  </button>
+                  <a
+                    href={previewModal.websiteUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-xs font-semibold text-white transition-all cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{isFrench ? 'Site officiel' : 'Official Page'}</span>
+                  </a>
+                </div>
               ) : (
                 <div />
               )}
@@ -1084,6 +1134,112 @@ ${cabinLabel} : ${cabinVal}`;
                 {isFrench ? 'Fermer' : 'Close'}
               </button>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 5. DIRECT INTERACTIVE WEB MODAL (IFRAME BROWSER) */}
+      <AnimatePresence>
+        {webModal?.isOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/85 backdrop-blur-md"
+            onClick={() => setWebModal(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-5xl h-[92vh] flex flex-col bg-[#141210] border border-[#2e2a24] rounded-2xl md:rounded-3xl shadow-2xl overflow-hidden"
+            >
+              {/* Header Bar */}
+              <div className="flex items-center justify-between px-4 py-3 bg-[#1c1916] border-b border-[#2e2a24] shrink-0">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                    <Globe className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-[#f0e9dc] truncate">
+                        {webModal.boatName}
+                      </span>
+                      {webModal.cabinName && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 font-medium border border-amber-500/20 truncate">
+                          {webModal.cabinName}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-[#a69a84] font-mono truncate block max-w-md">
+                      {webModal.url}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <a
+                    href={webModal.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#201d1a] hover:bg-[#2d2924] border border-[#2e2a24] text-xs font-semibold text-[#f0e9dc] transition-all"
+                    title={isFrench ? "Ouvrir dans un nouvel onglet" : "Open in new browser tab"}
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="hidden sm:inline">{isFrench ? 'Ouvrir l\'onglet' : 'Open Tab'}</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => setWebModal(null)}
+                    className="p-1.5 rounded-xl bg-[#201d1a] hover:bg-[#2d2924] text-[#a69a84] hover:text-white transition-all cursor-pointer"
+                    aria-label="Close"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Iframe Viewport Container */}
+              <div className="relative flex-1 w-full bg-white overflow-hidden">
+                {webIframeLoading && (
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#141210] text-[#f0e9dc] space-y-3">
+                    <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+                    <span className="text-xs font-medium text-[#a69a84]">
+                      {isFrench ? 'Chargement des détails et de l\'itinéraire...' : 'Loading itinerary & boat details...'}
+                    </span>
+                  </div>
+                )}
+
+                <iframe
+                  src={webModal.url}
+                  title={`${webModal.boatName} Web Details`}
+                  className="w-full h-full border-0"
+                  onLoad={() => setWebIframeLoading(false)}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+                />
+              </div>
+
+              {/* Bottom Fallback Notice Bar */}
+              <div className="px-4 py-2 bg-[#1c1916] border-t border-[#2e2a24] flex items-center justify-between text-[11px] text-[#a69a84] shrink-0">
+                <span className="truncate">
+                  {isFrench 
+                    ? "Si le site bloque l'affichage intégré, utilisez le bouton 'Ouvrir l'onglet'." 
+                    : "If the official site blocks embedding, click 'Open Tab' to view directly."}
+                </span>
+                <a
+                  href={webModal.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-amber-400 hover:underline font-semibold shrink-0 ml-2"
+                >
+                  {isFrench ? "Ouvrir directement →" : "Open directly →"}
+                </a>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

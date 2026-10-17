@@ -125,35 +125,11 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
     return localStorage.getItem('datacenter_admin_password');
   };
 
-  const handleSetupPasscode = (e: React.FormEvent) => {
-    e.preventDefault();
-    setPPassError(null);
-    const pass = password.trim();
-    if (!pass) {
-      // Just unlock directly if submitted empty
-      sessionStorage.setItem('datacenter_unlocked', 'true');
-      setIsUnlocked(true);
-      return;
-    }
-    const hashed = sha256(pass);
-    localStorage.setItem('datacenter_admin_password', hashed);
-    sessionStorage.setItem('datacenter_unlocked', 'true');
-    setIsUnlocked(true);
-    setPassword('');
-  };
-
   const MASTER_PASSCODES = [
+    'badthinkermorethanu@gmail.com', // User recovery backup email
     'admin123', 'admin', 'komodo2026', 'komodo', 'operator2026', 'operator', 
     'cabingen', '1234', '123456', '12345678', 'password', 'bookinghub'
   ];
-
-  const handleResetPasscode = () => {
-    localStorage.removeItem('datacenter_admin_password');
-    sessionStorage.setItem('datacenter_unlocked', 'true');
-    setIsUnlocked(true);
-    setPassword('');
-    setPPassError(null);
-  };
 
   const handleUnlock = (e: React.FormEvent) => {
     e.preventDefault();
@@ -161,20 +137,30 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
     const inputTrimmed = password.trim();
     const correctHash = getAdminPassphrase();
     const inputHash = sha256(inputTrimmed);
+    const inputLower = inputTrimmed.toLowerCase();
 
-    // Accept stored hash, master passcodes, or fallback unlock if field is submitted
+    // Check if user entered the backup recovery email badthinkermorethanu@gmail.com
+    const isRecoveryEmail = inputLower === 'badthinkermorethanu@gmail.com';
+    const isCurrentUserRecovery = auth.currentUser?.email?.toLowerCase() === 'badthinkermorethanu@gmail.com';
+
+    // Accept stored hash, backup email, or master passcodes
     if (
       !correctHash || 
       (correctHash && inputHash === correctHash) || 
-      MASTER_PASSCODES.includes(inputTrimmed.toLowerCase()) ||
-      inputTrimmed.toLowerCase() === 'admin'
+      isRecoveryEmail ||
+      isCurrentUserRecovery ||
+      MASTER_PASSCODES.includes(inputLower)
     ) {
       sessionStorage.setItem('datacenter_unlocked', 'true');
       setIsUnlocked(true);
       setPassword('');
       setPPassError(null);
     } else {
-      setPPassError(language === 'FR' ? "Mot de passe incorrect" : "Incorrect administrator password");
+      setPPassError(
+        language === 'FR' 
+          ? "Mot de passe incorrect. En cas d'oubli, utilisez l'email de secours badthinkermorethanu@gmail.com." 
+          : "Incorrect password. If forgotten, enter your backup email badthinkermorethanu@gmail.com."
+      );
     }
   };
 
@@ -1020,38 +1006,15 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
                         <AlertCircle className="w-4 h-4 shrink-0 text-destructive" />
                         <span>{pPassError}</span>
                       </div>
-                      <div className="flex items-center gap-2 pt-1 border-t border-destructive/15">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (password.trim()) {
-                              localStorage.setItem('datacenter_admin_password', sha256(password.trim()));
-                            } else {
-                              localStorage.removeItem('datacenter_admin_password');
-                            }
-                            sessionStorage.setItem('datacenter_unlocked', 'true');
-                            setIsUnlocked(true);
-                            setPassword('');
-                            setPPassError(null);
-                          }}
-                          className="px-3 py-1.5 bg-destructive/20 hover:bg-destructive/30 text-destructive text-[11px] font-bold rounded-lg transition-all cursor-pointer"
-                        >
-                          {language === 'FR' ? "Déverrouiller avec ce code" : "Unlock with this passcode"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleResetPasscode}
-                          className="px-3 py-1.5 bg-primary text-primary-foreground text-[11px] font-bold rounded-lg transition-all cursor-pointer"
-                        >
-                          {language === 'FR' ? "Ignorer & Ouvrir" : "Skip & Open"}
-                        </button>
+                      <div className="text-[10px] text-muted-foreground pt-1 border-t border-destructive/15">
+                        <span className="font-semibold text-foreground">Backup recovery:</span> badthinkermorethanu@gmail.com
                       </div>
                     </div>
                   )}
 
                   <div className="space-y-1 text-left">
                     <label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground block">
-                      Operator Passcode
+                      Operator Passcode or Backup Email
                     </label>
                     <div className="relative">
                       <input
@@ -1060,7 +1023,7 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
                         required
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="Enter admin passcode"
+                        placeholder="Enter admin passcode or badthinkermorethanu@gmail.com"
                         className="w-full bg-background/55 border border-border text-xs rounded-xl pl-9 pr-4 py-2.5 text-foreground placeholder:text-muted-foreground/45 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                       />
                       <Key className="w-4 h-4 text-muted-foreground/60 absolute left-3 top-3" />
@@ -1075,18 +1038,9 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
                     Unlock Access
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={handleResetPasscode}
-                    className="w-full py-2 border border-primary/30 bg-primary/10 hover:bg-primary/20 text-xs font-bold text-primary rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <Unlock className="w-3 h-3" />
-                    <span>{language === 'FR' ? "Réinitialiser & Déverrouiller Immédiatement" : "Reset & Unlock Settings Instantly"}</span>
-                  </button>
-
                   <div className="pt-2 flex flex-col items-center gap-1.5 border-t border-border/40 text-center">
-                    <span className="text-[10px] text-muted-foreground/75 font-mono">
-                      {language === 'FR' ? "Passe maître : admin123 ou cabingen" : "Master passcode: admin123 or cabingen"}
+                    <span className="text-[10px] text-muted-foreground/75">
+                      {language === 'FR' ? "Email de secours : badthinkermorethanu@gmail.com" : "Backup Email: badthinkermorethanu@gmail.com"}
                     </span>
                   </div>
                 </form>
@@ -2186,19 +2140,6 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
                           className="px-4 py-1.5 bg-primary text-primary-foreground hover:bg-primary/95 text-xs font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-sm"
                         >
                           Update Password
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (confirm("Reset administration passcode? This will clear the saved password and lock the panel immediately.")) {
-                              localStorage.removeItem('datacenter_admin_password');
-                              setIsUnlocked(false);
-                              setPassFeedback(null);
-                            }
-                          }}
-                          className="px-4 py-1.5 border border-border hover:bg-muted text-xs font-semibold rounded-xl text-muted-foreground transition-all cursor-pointer"
-                        >
-                          Reset & Lock Panel
                         </button>
                       </div>
                     </form>

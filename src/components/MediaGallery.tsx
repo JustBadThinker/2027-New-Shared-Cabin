@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
-import { db, auth, googleSignIn, getAccessToken } from '../lib/firebase';
+import { db, auth, googleSignIn, getAccessToken, isOfficeEmail, OFFICE_EMAILS } from '../lib/firebase';
 
 const EMPTY_STRING_ARRAY: string[] = [];
 
@@ -45,7 +45,10 @@ export const MediaGallery: React.FC = () => {
     setLivePreviewEnabled,
     selectedLiveFile,
     setSelectedLiveFile,
-    setDisplayedFiles
+    setDisplayedFiles,
+    googleUser,
+    setGoogleUser,
+    fetchDriveImages
   } = useStore();
 
   const activeTab = (tabs.find(t => t.id === activeTabId) || tabs[0] || {}) as any;
@@ -796,6 +799,68 @@ export const MediaGallery: React.FC = () => {
 
   if (!selectedBoatName) return null;
 
+  // Rule: Media Gallery is strictly limited to official office accounts (reservation.kic@gmail.com, reservation.lebaliblog@gmail.com).
+  // Other accounts (including badthinkermorethanu@gmail.com) cannot view/manage it until logged in with an official office account.
+  const isAuthorizedOffice = isOfficeEmail(googleUser?.email || auth.currentUser?.email);
+
+  if (!isAuthorizedOffice) {
+    return (
+      <div id="media-gallery" className="border border-border/80 rounded-3xl bg-card/40 backdrop-blur-md p-6 space-y-4 mt-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <span className="text-[9px] uppercase tracking-[0.2em] text-muted-foreground font-black">Media Gallery</span>
+            <h3 className="text-xl font-serif italic font-bold tracking-tight text-foreground flex items-center gap-2">
+              <Lock className="w-5 h-5 text-amber-500" />
+              <span>{selectedBoatName} Images — Office Account Required</span>
+            </h3>
+          </div>
+        </div>
+
+        <div className="p-6 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex flex-col sm:flex-row items-center gap-5 text-center sm:text-left">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-500 flex items-center justify-center shrink-0">
+            <Lock className="w-6 h-6" />
+          </div>
+          <div className="space-y-1.5 flex-1">
+            <h4 className="text-sm font-bold text-foreground">
+              {language === 'FR' ? "Accès réservé aux comptes du bureau" : "Access Restricted to Office Accounts"}
+            </h4>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              {language === 'FR'
+                ? "L'accès à la galerie média Google Drive est strictement restreint aux comptes officiels du bureau (reservation.kic@gmail.com ou reservation.lebaliblog@gmail.com). Même avec badthinkermorethanu@gmail.com, veuillez vous connecter avec le compte du bureau pour afficher les photos."
+                : "Google Drive Media Gallery is restricted to authorized office accounts (reservation.kic@gmail.com or reservation.lebaliblog@gmail.com). Other accounts cannot access this gallery. Please sign in with an office account."}
+            </p>
+            {googleUser && (
+              <p className="text-[11px] font-mono text-amber-400/90 pt-1">
+                {language === 'FR' ? "Compte actuellement connecté : " : "Currently connected as: "}
+                <strong>{googleUser.email}</strong> (Non autorisé pour la galerie)
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const res = await googleSignIn();
+                if (res) {
+                  setGoogleUser(res.user, res.accessToken);
+                  if (isOfficeEmail(res.user.email)) {
+                    await fetchDriveImages(res.accessToken);
+                  }
+                }
+              } catch (err: any) {
+                console.error("Sign in failed:", err);
+              }
+            }}
+            className="px-4 py-2.5 bg-primary text-primary-foreground hover:bg-primary/95 text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer whitespace-nowrap flex items-center gap-2"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            <span>{language === 'FR' ? "Connexion Compte Bureau" : "Sign In with Office Account"}</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div id="media-gallery" className="border border-border/80 rounded-3xl bg-card/40 backdrop-blur-md p-6 space-y-6 mt-8">
       {/* Header Info with Layout Options */}
@@ -1076,10 +1141,14 @@ export const MediaGallery: React.FC = () => {
                                 "p-1.5 rounded-lg border border-border/60 cursor-pointer transition-colors",
                                 copyFeedback[file.id] === 'IMAGE' 
                                   ? "bg-green-600 border-green-600 text-white" 
+                                  : copyFeedback[file.id] === 'LINK'
+                                  ? "bg-amber-600 border-amber-600 text-white"
                                   : "bg-background hover:bg-muted text-muted-foreground hover:text-foreground"
                               )}
                             >
                               {copyFeedback[file.id] === 'IMAGE' ? (
+                                <Check className="w-3.5 h-3.5" />
+                              ) : copyFeedback[file.id] === 'LINK' ? (
                                 <Check className="w-3.5 h-3.5" />
                               ) : (
                                 <Copy className="w-3.5 h-3.5" />

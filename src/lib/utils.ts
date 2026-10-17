@@ -273,57 +273,7 @@ async function convertBlobToPng(blob: Blob): Promise<Blob> {
   });
 }
 
-async function writeImageBlobToClipboard(blob: Blob): Promise<boolean> {
-  try {
-    const pngBlob = await convertBlobToPng(blob);
-    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.write === 'function') {
-      try {
-        await navigator.clipboard.write([
-          new ClipboardItem({ 'image/png': pngBlob })
-        ]);
-        return true;
-      } catch (_) {
-        try {
-          await navigator.clipboard.write([
-            new ClipboardItem({ 'image/png': Promise.resolve(pngBlob) })
-          ]);
-          return true;
-        } catch (e2) {
-          console.warn("ClipboardItem write failed:", e2);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("PNG blob conversion or clipboard write failed:", err);
-  }
-  return false;
-}
-
-function extractDriveFileId(val: string): string | null {
-  if (!val) return null;
-  const dMatch = val.match(/\/file\/d\/([a-zA-Z0-9_-]{20,60})/);
-  if (dMatch && dMatch[1]) return dMatch[1];
-  const idMatch = val.match(/[&?]id=([a-zA-Z0-9_-]{20,60})/);
-  if (idMatch && idMatch[1]) return idMatch[1];
-  if (/^[a-zA-Z0-9_-]{20,60}$/.test(val) && !val.startsWith('http')) return val;
-  return null;
-}
-
-/**
- * Copies an image from a URL or file ID directly to the user's clipboard as an actual image blob.
- * Uses Google Drive API when authenticated, internal image proxy, and fallback mechanisms.
- * Returns a promise with 'IMAGE' | 'LINK' | 'FAILED' status.
- */
-export async function copyImageToClipboard(fileIdOrUrl: string, fallbackThumbnailUrl?: string): Promise<'IMAGE' | 'LINK' | 'FAILED'> {
-  let directUrl = (fileIdOrUrl.startsWith('http://') || fileIdOrUrl.startsWith('https://'))
-    ? fileIdOrUrl
-    : `https://lh3.googleusercontent.com/d/${fileIdOrUrl}`;
-
-  const driveId = extractDriveFileId(fileIdOrUrl);
-  if (driveId) {
-    directUrl = `https://lh3.googleusercontent.com/d/${driveId}`;
-  }
-
+async function fetchRawImageBlob(directUrl: string, driveId: string | null, fallbackThumbnailUrl?: string): Promise<Blob> {
   // 1. Try Google Drive API with OAuth token if drive file
   if (driveId) {
     const token = getAccessToken();
@@ -334,8 +284,7 @@ export async function copyImageToClipboard(fileIdOrUrl: string, fallbackThumbnai
         });
         if (driveRes.ok) {
           const rawBlob = await driveRes.blob();
-          const written = await writeImageBlobToClipboard(rawBlob);
-          if (written) return 'IMAGE';
+          if (rawBlob.size > 0) return rawBlob;
         }
       } catch (err) {
         console.warn("Drive API media fetch failed, trying proxy:", err);
@@ -355,8 +304,7 @@ export async function copyImageToClipboard(fileIdOrUrl: string, fallbackThumbnai
       const ct = proxyRes.headers.get('content-type') || '';
       if (ct.startsWith('image/') || ct.startsWith('application/octet-stream')) {
         const rawBlob = await proxyRes.blob();
-        const written = await writeImageBlobToClipboard(rawBlob);
-        if (written) return 'IMAGE';
+        if (rawBlob.size > 0) return rawBlob;
       }
     }
   } catch (err) {
@@ -371,8 +319,7 @@ export async function copyImageToClipboard(fileIdOrUrl: string, fallbackThumbnai
       const ct = wsrvRes.headers.get('content-type') || '';
       if (ct.startsWith('image/')) {
         const rawBlob = await wsrvRes.blob();
-        const written = await writeImageBlobToClipboard(rawBlob);
-        if (written) return 'IMAGE';
+        if (rawBlob.size > 0) return rawBlob;
       }
     }
   } catch (err) {
@@ -388,38 +335,87 @@ export async function copyImageToClipboard(fileIdOrUrl: string, fallbackThumbnai
       const fbRes = await fetch(proxyUrl, { headers });
       if (fbRes.ok) {
         const rawBlob = await fbRes.blob();
-        const written = await writeImageBlobToClipboard(rawBlob);
-        if (written) return 'IMAGE';
+        if (rawBlob.size > 0) return rawBlob;
       }
     } catch (_) {}
   }
 
   // 5. Try canvas drawImage with crossOrigin
-  try {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.src = directUrl;
-    
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error("Unable to load image for canvas parsing"));
-    });
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = directUrl;
+  
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("Unable to load image for canvas parsing"));
+  });
 
-    const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error("Could not acquire 2D context");
-    
-    ctx.drawImage(img, 0, 0);
-    
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-    if (!blob) throw new Error("Failed to capture image blob data");
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error("Could not acquire 2D context");
+  
+  ctx.drawImage(img, 0, 0);
+  
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error("Failed to capture image blob data");
+  return blob;
+}
 
-    const written = await writeImageBlobToClipboard(blob);
-    if (written) return 'IMAGE';
-  } catch (err) {
-    console.warn("All direct image copy methods failed, falling back to link:", err);
+function extractDriveFileId(val: string): string | null {
+  if (!val) return null;
+  const dMatch = val.match(/\/file\/d\/([a-zA-Z0-9_-]{20,60})/);
+  if (dMatch && dMatch[1]) return dMatch[1];
+  const idMatch = val.match(/[&?]id=([a-zA-Z0-9_-]{20,60})/);
+  if (idMatch && idMatch[1]) return idMatch[1];
+  if (/^[a-zA-Z0-9_-]{20,60}$/.test(val) && !val.startsWith('http')) return val;
+  return null;
+}
+
+/**
+ * Copies an image from a URL or file ID directly to the user's clipboard as an actual image blob.
+ * Uses Google Drive API when authenticated, internal image proxy, and fallback mechanisms.
+ * Preserves browser user gesture activation by passing an asynchronous Blob Promise directly to ClipboardItem.
+ * Returns a promise with 'IMAGE' | 'LINK' | 'FAILED' status.
+ */
+export async function copyImageToClipboard(fileIdOrUrl: string, fallbackThumbnailUrl?: string): Promise<'IMAGE' | 'LINK' | 'FAILED'> {
+  let directUrl = (fileIdOrUrl.startsWith('http://') || fileIdOrUrl.startsWith('https://'))
+    ? fileIdOrUrl
+    : `https://lh3.googleusercontent.com/d/${fileIdOrUrl}`;
+
+  const driveId = extractDriveFileId(fileIdOrUrl);
+  if (driveId) {
+    directUrl = `https://lh3.googleusercontent.com/d/${driveId}`;
+  }
+
+  // Check if modern ClipboardItem and Async Clipboard API are available
+  if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.write === 'function') {
+    const pngBlobPromise = (async () => {
+      const rawBlob = await fetchRawImageBlob(directUrl, driveId, fallbackThumbnailUrl);
+      return convertBlobToPng(rawBlob);
+    })();
+
+    try {
+      // Modern Chromium / Safari / Firefox pattern:
+      // Passing Promise<Blob> to ClipboardItem preserves the synchronous user activation window!
+      const item = new ClipboardItem({
+        'image/png': pngBlobPromise
+      });
+      await navigator.clipboard.write([item]);
+      return 'IMAGE';
+    } catch (clipErr) {
+      console.warn("Direct Promise-based ClipboardItem write failed, trying resolved blob fallback:", clipErr);
+      try {
+        const pngBlob = await pngBlobPromise;
+        await navigator.clipboard.write([
+          new ClipboardItem({ 'image/png': pngBlob })
+        ]);
+        return 'IMAGE';
+      } catch (awaitClipErr) {
+        console.warn("Awaited ClipboardItem write failed, will fallback to URL copy:", awaitClipErr);
+      }
+    }
   }
 
   // Backup fallback: copy direct URL
