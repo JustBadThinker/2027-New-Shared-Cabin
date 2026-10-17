@@ -1,8 +1,9 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig, loadEnv} from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { parseKicHtml } from './src/lib/kicScraper';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
@@ -158,7 +159,48 @@ export default defineConfig(({mode}) => {
             }
           };
 
+          const handleScrapeBoat = async (req: any, res: any) => {
+            try {
+              const reqUrl = new URL(req.url || '', 'http://localhost:3000');
+              const targetUrl = reqUrl.searchParams.get('url');
+              if (!targetUrl) {
+                res.statusCode = 400;
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: 'Missing target URL' }));
+                return;
+              }
+
+              const response = await fetch(targetUrl, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+              });
+
+              if (!response.ok) {
+                res.statusCode = response.status;
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: `Upstream error: ${response.statusText}` }));
+                return;
+              }
+
+              const html = await response.text();
+              const data = parseKicHtml(html, targetUrl);
+
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify(data));
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: err?.message || 'Scrape failure' }));
+            }
+          };
+
           server.middlewares.use('/api/proxy-image', handleProxy);
+          server.middlewares.use('/api/scrape-boat', handleScrapeBoat);
         },
         configurePreviewServer(server) {
           const handleProxy = async (req: any, res: any) => {
@@ -247,7 +289,48 @@ export default defineConfig(({mode}) => {
             }
           };
 
+          const handleScrapeBoat = async (req: any, res: any) => {
+            try {
+              const reqUrl = new URL(req.url || '', 'http://localhost:3000');
+              const targetUrl = reqUrl.searchParams.get('url');
+              if (!targetUrl) {
+                res.statusCode = 400;
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: 'Missing target URL' }));
+                return;
+              }
+
+              const response = await fetch(targetUrl, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+              });
+
+              if (!response.ok) {
+                res.statusCode = response.status;
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: `Upstream error: ${response.statusText}` }));
+                return;
+              }
+
+              const html = await response.text();
+              const data = parseKicHtml(html, targetUrl);
+
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify(data));
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: err?.message || 'Scrape failure' }));
+            }
+          };
+
           server.middlewares.use('/api/proxy-image', handleProxy);
+          server.middlewares.use('/api/scrape-boat', handleScrapeBoat);
         }
       }
     ],

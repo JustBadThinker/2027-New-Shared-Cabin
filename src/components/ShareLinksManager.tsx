@@ -20,6 +20,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { CustomerSharePage } from './CustomerSharePage';
 
 interface ShareLinksManagerProps {
   isOpen: boolean;
@@ -36,6 +37,7 @@ export const ShareLinksManager: React.FC<ShareLinksManagerProps> = ({
   const [loading, setLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [previewShareId, setPreviewShareId] = useState<string | null>(null);
 
   const fetchLinks = async () => {
     try {
@@ -247,6 +249,16 @@ export const ShareLinksManager: React.FC<ShareLinksManagerProps> = ({
                       {/* Action buttons */}
                       <div className="flex items-center gap-2 shrink-0">
                         <button
+                          type="button"
+                          onClick={() => setPreviewShareId(link.shareId)}
+                          className="px-3 py-1.5 rounded-xl border border-amber-500/35 bg-amber-500/10 hover:bg-amber-500/20 text-xs font-semibold text-amber-300 flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95"
+                          title="Preview guest view in-app modal (Safe for AI Studio container)"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Preview</span>
+                        </button>
+
+                        <button
                           onClick={() => handleCopy(link.shareId)}
                           className="px-3 py-1.5 rounded-xl border border-[#2e2a24] bg-[#201d1a] hover:bg-[#282420] text-xs font-semibold text-[#f0e9dc] flex items-center gap-1.5 transition-all cursor-pointer"
                           title="Copy Share Link"
@@ -264,7 +276,7 @@ export const ShareLinksManager: React.FC<ShareLinksManagerProps> = ({
                           target="_blank"
                           rel="noopener noreferrer"
                           className="p-2 rounded-xl border border-[#2e2a24] bg-[#201d1a] hover:bg-[#282420] text-[#f0e9dc] transition-all"
-                          title="Open Public Page"
+                          title="Open Public Page in new tab"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
@@ -326,6 +338,15 @@ export const ShareLinksManager: React.FC<ShareLinksManagerProps> = ({
           </button>
         </div>
       </motion.div>
+
+      {/* In-App Customer Share Page Preview Modal (Safe for AI Studio container) */}
+      {previewShareId && (
+        <CustomerSharePage
+          shareId={previewShareId}
+          isModal={true}
+          onClose={() => setPreviewShareId(null)}
+        />
+      )}
     </div>
   );
 };

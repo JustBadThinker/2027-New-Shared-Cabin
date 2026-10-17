@@ -42,9 +42,11 @@ import {
   Bookmark,
   CheckSquare,
   Square,
-  Layers
+  Layers,
+  Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { CustomerSharePage } from './CustomerSharePage';
 
 interface ShareLinkModalProps {
   isOpen: boolean;
@@ -121,6 +123,7 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
   const [generatedLink, setGeneratedLink] = useState<{ id: string; url: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
 
   // Listen for WhatsApp configuration broadcasts
   useEffect(() => {
@@ -141,6 +144,7 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
     setError(null);
     setGeneratedLink(null);
     setCopied(false);
+    setPreviewModalOpen(false);
 
     // Pre-select boats:
     // If there are notepad boats, select ALL notepad boats!
@@ -370,15 +374,26 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
             </div>
 
             {/* Action Buttons */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setPreviewModalOpen(true)}
+                className="flex items-center justify-center gap-2 py-3 px-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition-all shadow-md shadow-amber-500/20 active:scale-[0.98] cursor-pointer"
+                title="Preview guest view in-app modal (works inside AI Studio container without opening a new tab)"
+              >
+                <Eye className="w-4 h-4 text-black" />
+                <span>Preview (Modal)</span>
+              </button>
+
               <a
                 href={generatedLink.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-[#181614] hover:bg-[#282420] border border-[#2e2a24] text-xs font-semibold text-[#f0e9dc] transition-all cursor-pointer"
+                className="flex items-center justify-center gap-2 py-3 px-3 rounded-2xl bg-[#181614] hover:bg-[#282420] border border-[#2e2a24] text-xs font-semibold text-[#f0e9dc] transition-all cursor-pointer"
+                title="Open public page in a new browser tab"
               >
                 <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
-                <span>Open Public Page</span>
+                <span>Open Tab</span>
               </a>
 
               <a
@@ -387,10 +402,10 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
                 )}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-[#25D366] hover:bg-[#20bd5a] text-white text-xs font-semibold transition-all shadow-md shadow-[#25D366]/20 cursor-pointer"
+                className="flex items-center justify-center gap-2 py-3 px-3 rounded-2xl bg-[#25D366] hover:bg-[#20bd5a] text-white text-xs font-semibold transition-all shadow-md shadow-[#25D366]/20 cursor-pointer"
               >
                 <MessageCircle className="w-3.5 h-3.5 fill-white" />
-                <span>Send via WhatsApp</span>
+                <span>WhatsApp</span>
               </a>
             </div>
 
@@ -649,6 +664,15 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({
           </div>
         )}
       </motion.div>
+
+      {/* In-App Customer Share Page Preview Modal (Safe for AI Studio container) */}
+      {previewModalOpen && generatedLink && (
+        <CustomerSharePage
+          shareId={generatedLink.id}
+          isModal={true}
+          onClose={() => setPreviewModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

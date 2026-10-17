@@ -164,6 +164,23 @@ export const AppConfigurator: React.FC<AppConfiguratorProps> = ({ isOpen, onClos
     }
   };
 
+  const handleSetupPasscode = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPPassError(null);
+    const pass = password.trim();
+    if (!pass) return;
+    const strengthErr = validatePasswordStrength(pass, language);
+    if (strengthErr) {
+      setPPassError(strengthErr);
+      return;
+    }
+    const hashed = sha256(pass);
+    localStorage.setItem('datacenter_admin_password', hashed);
+    sessionStorage.setItem('datacenter_unlocked', 'true');
+    setIsUnlocked(true);
+    setPassword('');
+  };
+
   const handleChangePassword = (e: React.FormEvent) => {
     e.preventDefault();
     setPassFeedback(null);
