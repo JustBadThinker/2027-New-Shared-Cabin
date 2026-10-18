@@ -1,0 +1,26 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # 1. API Route Rewrites for cPanel / Shared Hosting
+  RewriteRule ^api/scrape-boat/?$ api/scrape-boat.php [QSA,L]
+  RewriteRule ^api/proxy-image/?$ api/proxy-image.php [QSA,L]
+
+  # 2. If the requested file or folder actually exists, serve directly
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # 3. All other paths (such as /share/:id or /notepad) rewrite to index.html (SPA)
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Caching & MIME types
+<IfModule mod_headers.c>
+  # Ensure index.html is never aggressively cached so updates deploy immediately
+  <Files "index.html">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires 0
+  </Files>
+</IfModule>

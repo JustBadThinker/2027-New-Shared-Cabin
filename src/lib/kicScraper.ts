@@ -8,14 +8,25 @@
  *   #tab-itinraire, #tab-itineraire, #tab-itinerary -> Cruise Itinerary & Map
  */
 
+export interface ScrapedPriceItem {
+  label: string;       // e.g. "Basse saison", "Haute saison", "Tarif (min 2 pers.)"
+  amount: string;      // e.g. "Rp12 500 000 /personne"
+  period?: string;     // e.g. "Jan–Mai & Sep–Déc", "Juin–Août"
+}
+
 export interface ScrapedCabin {
   index: number;
   anchor: string; // e.g. '#1', '#2'
   name: string;
-  priceRaw?: string;
+  priceRaw?: string;         // legacy single-price fallback
   priceNumber?: number;
+  priceLowSeason?: string;   // e.g. Basse saison / Jan-May & Sep-Dec
+  priceHighSeason?: string;  // e.g. Haute saison / Jun-Aug
   extraBedRaw?: string;
   extraBedPriceNumber?: number;
+  extraBedLowSeason?: string;
+  extraBedHighSeason?: string;
+  prices?: ScrapedPriceItem[]; // Dynamic list of all price items/tiers
   bedType?: string;
   amenities: string[];
   deck?: string;
@@ -90,6 +101,31 @@ export function extractUrlAnchor(url: string): string | null {
   return hash || null;
 }
 
+function cleanText(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#8211;/g, '-')
+    .replace(/&#8217;/g, "'")
+    .replace(/&rsquo;/g, "'")
+    .replace(/[’‘]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/&quot;/g, '"')
+    .trim();
+}
+
+function isJunkImage(src: string): boolean {
+  if (!src) return true;
+  const lower = src.toLowerCase();
+  if (lower.includes('logo') || lower.includes('header-lebaliblog') || lower.includes('icon') || lower.includes('avatar')) return true;
+  // Day / Jour images are destinations, not cabin photos. Use regex boundary to avoid matching "ZENDAYA"!
+  if (/\/(?:day|jour)\d/i.test(src)) return true;
+  if (lower.includes('carte') || lower.includes('map') || lower.includes('peta')) return true;
+  return false;
+}
+
 /**
  * Parses raw HTML from a Komodo Island Cruises or Le Bali Blog boat page
  */
@@ -98,185 +134,296 @@ export function parseKicHtml(html: string, url: string): ScrapedBoatData {
   const isLBB = brand === 'LBB';
 
   const title = html.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim() || '';
-  const h1Match = html.match(/<h1[^>]*class=["\x27][^"\x27]*entry-title[^"\x27]*["\x27][^>]*>(.*?)<\/h1>/i);
-  let boatName = h1Match ? h1Match[1].replace(/<[^>]+>/g, '').trim() : title.split('|')[0].trim();
+  const h1Match = html.match(/<h1[^>]*class=["\x27][^"\x27]*entry-title[^"\x27]*["\x27][^>]*>(.*?)<\/h1>/i) ||
+                  html.match(/<h1[^>]*>(.*?)<\/h1>/i);
+  let boatName = h1Match ? cleanText(h1Match[1]) : title.split('|')[0].trim();
   boatName = boatName
     .replace(/\s+Boat$/i, '')
     .replace(/^Bateau\s+/i, '')
+    .replace(/\s*:\s*Croisière.*$/i, '')
+    .replace(/\s*:\s*Cruise.*$/i, '')
     .replace(/\s*\|\s*Le Bali Blog.*$/i, '')
     .replace(/\s*\|\s*Komodo Island Cruises.*$/i, '')
     .trim();
 
   // Extract featured images from hero & main boat carousels
   const featuredImages: string[] = [];
-  const imgMatches = [...html.matchAll(/src=["\x27](https:\/\/[^"\x27]+\.(?:jpe?g|png|webp)[^"\x27]*)["\x27]/gi)];
+  const imgMatches = [...html.matchAll(/(?:data-full-image|data-light-image|src)=["\x27](https:\/\/[^"\x27]+\.(?:jpe?g|png|webp)[^"\x27]*)["\x27]/gi)];
   imgMatches.forEach(m => {
     const src = m[1];
     if (
-      !src.includes('logo') && 
-      !src.includes('icon') && 
-      !src.includes('avatar') &&
-      !src.includes('DAY') &&
-      !src.includes('carte') &&
-      !src.includes('map') &&
-      !featuredImages.includes(src) &&
+      !isJunkImage(src) && 
+      !featuredImages.includes(src) && 
       (src.includes('uploads') || src.includes('lebaliblog') || src.includes('komodoislandcruises'))
     ) {
       featuredImages.push(src);
     }
   });
 
-  // Extract Cabins: Anchors #1, #2, #3, etc. (sorted by highest price first)
+  // Extract Cabins from Kadence Accordion Panes / Tabs
   const cabins: ScrapedCabin[] = [];
-  for (let c = 1; c <= 12; c++) {
-    // Check various anchor patterns used by WordPress/Kadence/Elementor for #1, #2, etc.
-    const anchorMatches = [
-      `id="${c}"`,
-      `id="tab-${c}"`,
-      `id="cabin-${c}"`,
-      `id="chambre-${c}"`,
-      `id="pane-${c}"`,
-      `id="#${c}"`,
-      `data-tab="${c}"`,
-      `href="#${c}"`
-    ];
-    let idx = -1;
-    for (const pat of anchorMatches) {
-      idx = html.indexOf(pat);
-      if (idx !== -1) break;
-    }
-    if (idx === -1) continue;
 
-    const nextIdx = html.indexOf(`id="${c + 1}"`, idx);
-    const chunk = html.substring(idx, nextIdx !== -1 ? nextIdx : idx + 4500);
-
-    const nameMatch = chunk.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i);
-    let rawName = nameMatch ? nameMatch[1].replace(/<[^>]+>/g, '').trim() : (isLBB ? `Chambre ${c}` : `Cabin ${c}`);
-    rawName = rawName.replace(/&amp;/g, '&');
-
-    // Extract price (French Rp 7 500 000 /personne or English IDR 3,600,000 /person)
-    const priceMatch = chunk.match(/(?:IDR|Rp\.?)\s*[\d\s,.]+(?:\s*\/\s*(?:personne|person|pax))?/i);
-    const priceRaw = priceMatch ? priceMatch[0].trim() : undefined;
-    let priceNumber: number | undefined;
-    if (priceRaw) {
-      const numOnly = priceRaw.replace(/[^0-9]/g, '');
-      if (numOnly) priceNumber = parseInt(numOnly, 10);
-    }
-
-    // Extract optional extra bed
-    const extraBedMatch = chunk.match(/(?:extra\s*bed|lit\s*suppl[eé]mentaire)[^<]*?(?:IDR|Rp\.?)\s*[\d\s,.]+/i);
-    const extraBedRaw = extraBedMatch ? extraBedMatch[0].trim() : undefined;
-    let extraBedPriceNumber: number | undefined;
-    if (extraBedRaw) {
-      const numOnly = extraBedRaw.replace(/[^0-9]/g, '');
-      if (numOnly) extraBedPriceNumber = parseInt(numOnly, 10);
-    }
-
-    // Extract images inside this cabin's carousel
-    const cabinImgs: string[] = [];
-    const cImgMatches = [...chunk.matchAll(/src=["\x27](https:\/\/[^"\x27]+\.(?:jpe?g|png|webp)[^"\x27]*)["\x27]/gi)];
-    cImgMatches.forEach(m => {
-      const src = m[1];
-      if (
-        !src.includes('logo') && 
-        !src.includes('icon') && 
-        !src.includes('avatar') && 
-        !src.includes('carte') &&
-        !src.includes('map') &&
-        !cabinImgs.includes(src)
-      ) {
-        cabinImgs.push(src);
+  // Match all accordion panes: <div class="...kt-accordion-pane..." id="(\d+)">
+  const paneMatches = [...html.matchAll(/<div[^>]*class=["\x27][^"\x27]*kt-accordion-pane[^"\x27]*["\x27][^>]*\bid=["\x27](\d+)["\x27][^>]*>/gi)];
+  
+  if (paneMatches.length > 0) {
+    paneMatches.forEach((m, idx) => {
+      const paneId = parseInt(m[1], 10);
+      let nextStart = (idx + 1 < paneMatches.length) ? paneMatches[idx + 1].index : -1;
+      if (nextStart === -1) {
+        const tabIdx = html.indexOf('id="tab-', m.index);
+        nextStart = tabIdx !== -1 ? tabIdx : m.index + 25000;
       }
-    });
+      const chunk = html.substring(m.index, nextStart);
 
-    // Extract amenities (Double Bed, Air Conditioning, Ensuite Bathroom, etc.)
-    const amenities: string[] = [];
-    const textChunk = chunk.replace(/<style[^>]*>.*?<\/style>/gis, '').replace(/<[^>]+>/g, ' ');
-    
-    // Beds
-    if (/queen\s*size/i.test(textChunk)) amenities.push(isLBB ? '1 Lit Queen size' : '1 Queen Size Bed');
-    else if (/double\s*bed/i.test(textChunk) || /doube\s*bed/i.test(textChunk) || /lit\s*double/i.test(textChunk)) amenities.push(isLBB ? '1 Lit Double' : '1 Double Bed');
-    else if (/bunk\s*bed/i.test(textChunk) || /lits\s*superpos[eé]s/i.test(textChunk)) amenities.push(isLBB ? 'Lits superposés' : 'Bunk Beds');
-    else if (/single\s*bed/i.test(textChunk) || /lit\s*simple/i.test(textChunk)) amenities.push(isLBB ? '1 Lit simple' : 'Single Bed');
+      const titleMatch = chunk.match(/<span[^>]*class=["\x27][^"\x27]*kt-blocks-accordion-title[^"\x27]*["\x27][^>]*>([\s\S]*?)<\/span>/i) ||
+                         chunk.match(/<button[^>]*class=["\x27][^"\x27]*kt-blocks-accordion-header[^"\x27]*["\x27][^>]*>([\s\S]*?)<\/button>/i) ||
+                         chunk.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i);
+      let rawTitle = titleMatch ? cleanText(titleMatch[1]) : '';
 
-    // Climate & Comfort
-    if (/air\s*conditioning/i.test(textChunk) || /climatisation/i.test(textChunk) || /\bac\b/i.test(textChunk)) amenities.push(isLBB ? 'Climatisation' : 'Air Conditioning');
-    
-    // Bathroom
-    if (/salle\s*de\s*bains\s*priv[eé]e/i.test(textChunk) || /private\s*(?:ensuite\s*)?bathroom/i.test(textChunk) || /ensuite/i.test(textChunk)) {
-      amenities.push(isLBB ? 'Salle de bains privée' : 'Private Ensuite Bathroom');
-    } else if (/salle\s*de\s*bains\s*partag[eé]e/i.test(textChunk) || /shared\s*bathroom/i.test(textChunk)) {
-      amenities.push(isLBB ? 'Salle de bains partagée' : 'Shared bathroom');
-    }
+      // Skip non-cabin utility panes (Google Drive links, download links, empty panes)
+      if (!rawTitle || /google\s*drive|télécharger|download|lien\s*drive/i.test(rawTitle)) {
+        return;
+      }
 
-    if (/eau\s*chaude/i.test(textChunk) || /hot\s*water/i.test(textChunk)) amenities.push(isLBB ? 'Eau chaude' : 'Hot water');
-    
-    // View / Balcony / Hublot
-    if (/balcon\s*priv[eé]/i.test(textChunk) || /private\s*balcony/i.test(textChunk) || /balcony/i.test(textChunk)) {
-      amenities.push(isLBB ? 'Balcon privé' : 'Private balcony');
-    }
-    if (/hublot/i.test(textChunk) || /porthole/i.test(textChunk)) {
-      amenities.push(isLBB ? 'Hublot' : 'Porthole');
-    } else if (/vue\s*mer/i.test(textChunk) || /sea\s*view/i.test(textChunk) || /ocean\s*view/i.test(textChunk)) {
-      amenities.push(isLBB ? 'Vue mer' : 'Sea View');
-    }
+      // Extract price (e.g. Rp 3 600 000 / personne or IDR 3,600,000 / person)
+      const priceMatch = rawTitle.match(/(?:IDR|Rp\.?)\s*[\d\s,.]+(?:\s*\/\s*(?:personne|person|pax))?/i) ||
+                         chunk.match(/(?:IDR|Rp\.?)\s*[\d\s,.]+(?:\s*\/\s*(?:personne|person|pax))?/i);
+      let priceRaw = priceMatch ? priceMatch[0].trim() : undefined;
+      let priceNumber: number | undefined;
+      if (priceRaw) {
+        const numOnly = priceRaw.replace(/[^0-9]/g, '');
+        if (numOnly) priceNumber = parseInt(numOnly, 10);
+      }
 
-    // Deck
-    if (/pont\s*sup[eé]rieur/i.test(textChunk) || /upper\s*deck/i.test(textChunk)) amenities.push(isLBB ? 'Pont Supérieur' : 'Upper deck');
-    else if (/pont\s*inf[eé]rieur/i.test(textChunk) || /lower\s*deck/i.test(textChunk)) amenities.push(isLBB ? 'Pont Inférieur' : 'Lower deck');
-    else if (/pont\s*principal/i.test(textChunk) || /main\s*deck/i.test(textChunk)) amenities.push(isLBB ? 'Pont Principal' : 'Main deck');
+      // Extract extra bed price if present
+      const extraBedMatch = chunk.match(/(?:extra\s*bed|lit\s*suppl[eé]mentaire)[^<]*?(?:IDR|Rp\.?)\s*[\d\s,.]+/i);
+      let extraBedRaw = extraBedMatch ? extraBedMatch[0].trim() : undefined;
+      let extraBedPriceNumber: number | undefined;
+      if (extraBedRaw) {
+        const numOnly = extraBedRaw.replace(/[^0-9]/g, '');
+        if (numOnly) extraBedPriceNumber = parseInt(numOnly, 10);
+      }
 
-    // Capacity & Room style
-    if (/capacit[eé]\s*:\s*\d+/i.test(textChunk) || /capacity\s*:\s*\d+/i.test(textChunk)) {
-      const capMatch = textChunk.match(/(?:capacit[eé]|capacity)\s*:\s*(\d+)\s*(?:personnes?|people|guests?)/i);
-      if (capMatch) amenities.push(isLBB ? `Capacité : ${capMatch[1]} personnes` : `Capacity: ${capMatch[1]} guests`);
-    }
-    if (/chambre\s*partag[eé]e/i.test(textChunk) || /shared\s*room/i.test(textChunk)) {
-      amenities.push(isLBB ? 'Chambre partagée' : 'Shared room');
-    } else if (/chambre\s*priv[eé]e/i.test(textChunk) || /private\s*room/i.test(textChunk)) {
-      amenities.push(isLBB ? 'Chambre privée' : 'Private room');
-    }
+      // Clean cabin name (strip price from accordion title)
+      let cleanName = rawTitle;
+      if (priceRaw) {
+        cleanName = cleanName.replace(priceRaw, '').trim();
+      }
+      cleanName = cleanName.replace(/[:\-–—\s]+$/, '').replace(/^[:\-–—\s]+/, '').trim();
+      if (!cleanName) {
+        cleanName = isLBB ? `Chambre ${paneId}` : `Cabin ${paneId}`;
+      }
 
-    cabins.push({
-      index: c,
-      anchor: `#${c}`,
-      name: rawName,
-      priceRaw,
-      priceNumber,
-      extraBedRaw,
-      extraBedPriceNumber,
-      amenities,
-      images: cabinImgs
+      // Extract full-resolution cabin photos
+      const cabinImgs: string[] = [];
+      const hrefMatches = [...chunk.matchAll(/<a[^>]*class=["\x27][^"\x27]*kb-gallery-item-link[^"\x27]*["\x27][^>]*href=["\x27](https:\/\/[^"\x27]+\.(?:jpe?g|png|webp))["\x27]/gi)];
+      hrefMatches.forEach(hm => {
+        if (!cabinImgs.includes(hm[1])) cabinImgs.push(hm[1]);
+      });
+
+      const chunkImgMatches = [...chunk.matchAll(/(?:data-full-image|data-light-image|src)=["\x27](https:\/\/[^"\x27]+\.(?:jpe?g|png|webp)[^"\x27]*)["\x27]/gi)];
+      chunkImgMatches.forEach(im => {
+        const src = im[1];
+        if (!isJunkImage(src) && !cabinImgs.includes(src)) {
+          // Avoid lower-resolution resized thumbnails if full-size already exists
+          const baseNameMatch = src.match(/(.+?)(?:-\d+x\d+)?\.(jpe?g|png|webp)$/i);
+          if (baseNameMatch) {
+            const originalSrc = `${baseNameMatch[1]}.${baseNameMatch[2]}`;
+            if (!cabinImgs.includes(originalSrc)) {
+              cabinImgs.push(src);
+            }
+          } else {
+            cabinImgs.push(src);
+          }
+        }
+      });
+
+      // Extract amenities
+      const amenities: string[] = [];
+      const textChunk = chunk.replace(/<style[^>]*>.*?<\/style>/gis, '').replace(/<[^>]+>/g, ' ');
+
+      if (/queen\s*size/i.test(textChunk)) amenities.push(isLBB ? '1 Lit Queen size' : '1 Queen Size Bed');
+      else if (/king\s*size/i.test(textChunk)) amenities.push(isLBB ? '1 Lit King size' : '1 King Size Bed');
+      else if (/double\s*bed/i.test(textChunk) || /doube\s*bed/i.test(textChunk) || /lit\s*double/i.test(textChunk)) amenities.push(isLBB ? '1 Lit Double' : '1 Double Bed');
+      else if (/bunk\s*bed/i.test(textChunk) || /lits\s*superpos[eé]s/i.test(textChunk)) amenities.push(isLBB ? 'Lits superposés' : 'Bunk Beds');
+      else if (/single\s*bed/i.test(textChunk) || /lit\s*simple/i.test(textChunk)) amenities.push(isLBB ? '1 Lit simple' : 'Single Bed');
+
+      if (/air\s*conditioning/i.test(textChunk) || /climatisation/i.test(textChunk) || /\bac\b/i.test(textChunk)) amenities.push(isLBB ? 'Climatisation' : 'Air Conditioning');
+      
+      if (/salle\s*de\s*bains\s*priv[eé]e/i.test(textChunk) || /private\s*(?:ensuite\s*)?bathroom/i.test(textChunk) || /ensuite/i.test(textChunk)) {
+        amenities.push(isLBB ? 'Salle de bains privée' : 'Private Ensuite Bathroom');
+      } else if (/salle\s*de\s*bains\s*partag[eé]e/i.test(textChunk) || /shared\s*bathroom/i.test(textChunk)) {
+        amenities.push(isLBB ? 'Salle de bains partagée' : 'Shared bathroom');
+      }
+
+      if (/eau\s*chaude/i.test(textChunk) || /hot\s*water/i.test(textChunk)) amenities.push(isLBB ? 'Eau chaude' : 'Hot water');
+
+      if (/balcon\s*priv[eé]/i.test(textChunk) || /private\s*balcony/i.test(textChunk) || /balcony/i.test(textChunk)) {
+        amenities.push(isLBB ? 'Balcon privé' : 'Private balcony');
+      }
+      if (/hublot/i.test(textChunk) || /porthole/i.test(textChunk)) {
+        amenities.push(isLBB ? 'Hublot' : 'Porthole');
+      } else if (/vue\s*mer/i.test(textChunk) || /sea\s*view/i.test(textChunk) || /ocean\s*view/i.test(textChunk)) {
+        amenities.push(isLBB ? 'Vue mer' : 'Sea View');
+      }
+
+      if (/pont\s*sup[eé]rieur/i.test(textChunk) || /upper\s*deck/i.test(textChunk)) amenities.push(isLBB ? 'Pont Supérieur' : 'Upper deck');
+      else if (/pont\s*inf[eé]rieur/i.test(textChunk) || /lower\s*deck/i.test(textChunk)) amenities.push(isLBB ? 'Pont Inférieur' : 'Lower deck');
+      else if (/pont\s*principal/i.test(textChunk) || /main\s*deck/i.test(textChunk)) amenities.push(isLBB ? 'Pont Principal' : 'Main deck');
+
+      if (/capacit[eé]\s*:\s*\d+/i.test(textChunk) || /capacity\s*:\s*\d+/i.test(textChunk)) {
+        const capMatch = textChunk.match(/(?:capacit[eé]|capacity)\s*:\s*(\d+)\s*(?:personnes?|people|guests?)/i);
+        if (capMatch) amenities.push(isLBB ? `Capacité : ${capMatch[1]} personnes` : `Capacity: ${capMatch[1]} guests`);
+      }
+      if (/chambre\s*partag[eé]e/i.test(textChunk) || /shared\s*room/i.test(textChunk)) {
+        amenities.push(isLBB ? 'Chambre partagée' : 'Shared room');
+      } else if (/chambre\s*priv[eé]e/i.test(textChunk) || /private\s*room/i.test(textChunk)) {
+        amenities.push(isLBB ? 'Chambre privée' : 'Private room');
+      }
+
+      // --- Parse price table (Basse saison / Haute saison / Extra bed / Multi-tier) ---
+      const prices: ScrapedPriceItem[] = [];
+      let priceLowSeason: string | undefined;
+      let priceHighSeason: string | undefined;
+      let extraBedLowSeason: string | undefined;
+      let extraBedHighSeason: string | undefined;
+
+      const tableMatch = chunk.match(/<table[\s\S]*?<\/table>/i);
+      if (tableMatch) {
+        const tableHtml = tableMatch[0];
+        // Split into rows
+        const rows = [...tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
+        let columnHeaders: { label: string; period?: string }[] = [];
+
+        rows.forEach(rowM => {
+          const rowText = rowM[1];
+          // Extract all cell texts
+          const cells = [...rowText.matchAll(/<t[dh][^>]*>(.*?)<\/t[dh]>/gis)].map(c => cleanText(c[1]));
+          if (cells.length < 2) return;
+
+          const rowJoined = cells.join(' ').toLowerCase();
+
+          // Check if this row is a season header row (contains season / periode keywords and no actual price values)
+          if (/saison|season|periode|période/i.test(rowJoined) && !/(?:idr|rp\.?)\s*\d+/i.test(rowJoined)) {
+            columnHeaders = cells.map(c => {
+              const text = c.trim();
+              if (/basse\s*saison|low\s*season/i.test(text)) {
+                return { 
+                  label: isLBB ? 'Basse saison' : 'Low Season', 
+                  period: isLBB ? 'Jan–Mai & Sep–Déc' : 'Jan–May & Sep–Dec' 
+                };
+              }
+              if (/haute\s*saison|high\s*season/i.test(text)) {
+                return { 
+                  label: isLBB ? 'Haute saison' : 'High Season', 
+                  period: isLBB ? 'Juin–Août' : 'Jun–Aug' 
+                };
+              }
+              if (/peak\s*season/i.test(text)) {
+                return { 
+                  label: 'Peak Season', 
+                  period: isLBB ? 'Juillet–Août' : 'Jul–Aug' 
+                };
+              }
+              return { label: text };
+            });
+            return;
+          }
+
+          const label = cleanText(cells[0]).toLowerCase();
+          const isExtraBed = /extra\s*bed|appoint|lit\s*suppl/i.test(label);
+          const isTarif = !isExtraBed && /tarif|price|prix/i.test(label);
+
+          // For rows with multiple price columns (low season / high season / more)
+          if (cells.length >= 3) {
+            for (let c = 1; c < cells.length; c++) {
+              const val = cells[c]?.trim();
+              if (/(?:IDR|Rp\.?)[\d\s,.]+/i.test(val)) {
+                const headerInfo = columnHeaders[c] || {
+                  label: c === 1 ? (isLBB ? 'Basse saison' : 'Low Season') : (isLBB ? 'Haute saison' : 'High Season'),
+                  period: c === 1 ? (isLBB ? 'Jan–Mai & Sep–Déc' : 'Jan–May & Sep–Dec') : (isLBB ? 'Juin–Août' : 'Jun–Aug')
+                };
+                if (isTarif) {
+                  prices.push({
+                    label: headerInfo.label,
+                    amount: val,
+                    period: headerInfo.period
+                  });
+                  if (c === 1) priceLowSeason = val;
+                  if (c === 2) priceHighSeason = val;
+                  if (!priceRaw) priceRaw = val;
+                } else if (isExtraBed) {
+                  if (c === 1) extraBedLowSeason = val;
+                  if (c === 2) extraBedHighSeason = val;
+                  if (!extraBedRaw) extraBedRaw = val;
+                }
+              }
+            }
+          } else if (cells.length === 2) {
+            // Single price column / row — standard rate or custom tier!
+            const val = cells[1]?.trim();
+            if (/(?:IDR|Rp\.?)[\d\s,.]+/i.test(val)) {
+              if (isTarif) {
+                if (!priceRaw) priceRaw = val;
+                const numOnly = val.replace(/[^0-9]/g, '');
+                if (numOnly) priceNumber = parseInt(numOnly, 10);
+
+                prices.push({
+                  label: cells[0].trim(),
+                  amount: val
+                });
+              } else if (isExtraBed) {
+                extraBedRaw = val;
+                const numOnly = val.replace(/[^0-9]/g, '');
+                if (numOnly) extraBedPriceNumber = parseInt(numOnly, 10);
+              }
+            }
+          }
+        });
+      }
+
+      cabins.push({
+        index: paneId,
+        anchor: `#${paneId}`,
+        name: cleanName,
+        priceRaw,
+        priceNumber,
+        priceLowSeason,
+        priceHighSeason,
+        extraBedRaw,
+        extraBedPriceNumber,
+        extraBedLowSeason,
+        extraBedHighSeason,
+        prices: prices.length > 0 ? prices : undefined,
+        amenities,
+        images: cabinImgs
+      });
     });
   }
 
-  // Sort cabins descending by price (#1 is highest price first)
-  if (cabins.some(c => c.priceNumber !== undefined)) {
-    cabins.sort((a, b) => (b.priceNumber || 0) - (a.priceNumber || 0));
-    cabins.forEach((cab, i) => {
-      cab.index = i + 1;
-      cab.anchor = `#${i + 1}`;
-    });
-  }
+  // Preserve natural website anchor order (#1, #2, #3...) matching tabs
+  cabins.sort((a, b) => a.index - b.index);
 
-  // Extract Inclusions (under #tab-inclusions or "What's included" / "Ce Qui Est Inclus")
+  // Extract Inclusions (under "What's included" / "Ce Qui Est Inclus" or #tab-inclusions)
   const inclusions: string[] = [];
-  const incHeaderMatch = html.match(/(?:Ce\s*qui\s*est\s*inclus|What&#8217;s\s*included|What[\'’]s\s*included|What\s*is\s*included|id=["\']tab-inclusions["\']|href=["\']#tab-inclusions["\'])/i);
+  const incHeaderMatch = html.match(/(?:Ce\s*qui\s*est\s*inclus|What&#8217;s\s*included|What[\'’]s\s*included|What\s*is\s*included)/i)
+    || html.match(/(?:id=["\']tab-inclusions["\']|href=["\']#tab-inclusions["\'])/i);
   if (incHeaderMatch && incHeaderMatch.index !== undefined) {
     const startIdx = incHeaderMatch.index;
-    const endMatch = html.substring(startIdx).match(/(?:Ce\s*qui\s*n[\'’]est\s*pas\s*inclus|What&#8217;s\s*not\s*included|What[\'’]s\s*not\s*included|id=["\']tab-apporter["\']|id=["\']tab-a-apporter["\'])/i);
-    const endIdx = endMatch && endMatch.index !== undefined ? startIdx + endMatch.index : startIdx + 8000;
+    const endMatch = html.substring(startIdx).match(/(?:Ce\s*qui\s*n[\'’]est\s*pas\s*inclus|Ce\s*qui\s*n&#8217;est\s*pas\s*inclus|What&#8217;s\s*not\s*included|What[\'’]s\s*not\s*included|What\s*is\s*not\s*included|What\s*is\s*excluded|What&#8217;s\s*excluded|What[\'’]s\s*excluded|Non\s*inclus|Exclusions?|id=["\']tab-apporter["\']|id=["\']tab-a-apporter["\']|[ÀA]\s*apporter|What\s*to\s*bring|Things\s*to\s*bring)/i);
+    const endIdx = endMatch && endMatch.index !== undefined ? startIdx + endMatch.index : startIdx + 25000;
     const incSub = html.substring(startIdx, endIdx);
 
     const incListMatches = [...incSub.matchAll(/class=["\x27][^"\x27]*kt-svg-icon-list-text[^"\x27]*["\x27][^>]*>(.*?)<\/span>/gis)];
     incListMatches.forEach(m => {
-      let clean = m[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#8211;/g, '-').replace(/&#8217;/g, "'").trim();
+      let clean = cleanText(m[1]);
       if (clean && !inclusions.includes(clean)) inclusions.push(clean);
     });
     if (inclusions.length === 0) {
       const liMatches = [...incSub.matchAll(/<li[^>]*>(.*?)<\/li>/gis)];
       liMatches.forEach(m => {
-        let clean = m[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#8211;/g, '-').replace(/&#8217;/g, "'").trim();
+        let clean = cleanText(m[1]);
         if (clean && clean.length > 3 && !inclusions.includes(clean)) inclusions.push(clean);
       });
     }
@@ -307,24 +454,24 @@ export function parseKicHtml(html: string, url: string): ScrapedBoatData {
     }
   }
 
-  // Extract Exclusions (under #tab-inclusions or "What's not included" / "Ce Qui N'est Pas Inclus")
+  // Extract Exclusions (under "What's not included" / "What is excluded" / "Ce Qui N'est Pas Inclus")
   const exclusions: string[] = [];
-  const excHeaderMatch = html.match(/(?:Ce\s*qui\s*n[\'’]est\s*pas\s*inclus|What&#8217;s\s*not\s*included|What[\'’]s\s*not\s*included|What\s*is\s*excluded|Non\s*inclus|Exclusions)/i);
+  const excHeaderMatch = html.match(/(?:Ce\s*qui\s*n[\'’]est\s*pas\s*inclus|Ce\s*qui\s*n&#8217;est\s*pas\s*inclus|What&#8217;s\s*not\s*included|What[\'’]s\s*not\s*included|What\s*is\s*not\s*included|What\s*is\s*excluded|What&#8217;s\s*excluded|What[\'’]s\s*excluded|Non\s*inclus|Exclusions?)/i);
   if (excHeaderMatch && excHeaderMatch.index !== undefined) {
     const startIdx = excHeaderMatch.index;
-    const endMatch = html.substring(startIdx).match(/(?:[ÀA]\s*apporter|What\s*to\s*bring|Things\s*to\s*bring|id=["\']tab-apporter["\']|id=["\']tab-a-apporter["\']|Termes\s*et\s*conditions)/i);
-    const endIdx = endMatch && endMatch.index !== undefined ? startIdx + endMatch.index : startIdx + 8000;
+    const endMatch = html.substring(startIdx).match(/(?:[ÀA]\s*apporter|What\s*to\s*bring|Things\s*to\s*bring|id=["\']tab-apporter["\']|id=["\']tab-a-apporter["\']|Termes\s*et\s*conditions|Terms\s*and\s*conditions|General\s*terms|For\s*luxury\s*category)/i);
+    const endIdx = endMatch && endMatch.index !== undefined ? startIdx + endMatch.index : startIdx + 25000;
     const excSub = html.substring(startIdx, endIdx);
 
     const excListMatches = [...excSub.matchAll(/class=["\x27][^"\x27]*kt-svg-icon-list-text[^"\x27]*["\x27][^>]*>(.*?)<\/span>/gis)];
     excListMatches.forEach(m => {
-      let clean = m[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#8211;/g, '-').replace(/&#8217;/g, "'").trim();
+      let clean = cleanText(m[1]);
       if (clean && !exclusions.includes(clean)) exclusions.push(clean);
     });
     if (exclusions.length === 0) {
       const liMatches = [...excSub.matchAll(/<li[^>]*>(.*?)<\/li>/gis)];
       liMatches.forEach(m => {
-        let clean = m[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#8211;/g, '-').replace(/&#8217;/g, "'").trim();
+        let clean = cleanText(m[1]);
         if (clean && clean.length > 3 && !exclusions.includes(clean)) exclusions.push(clean);
       });
     }
@@ -350,24 +497,24 @@ export function parseKicHtml(html: string, url: string): ScrapedBoatData {
     }
   }
 
-  // Extract What to bring (under #tab-apporter / #tab-a-apporter or "À apporter")
+  // Extract What to bring (under #tab-apporter / #tab-a-apporter or "À apporter" / "What to bring")
   const whatToBring: string[] = [];
   const bringHeaderMatch = html.match(/(?:id=["\']tab-apporter["\']|id=["\']tab-a-apporter["\']|[ÀA]\s*apporter|What\s*To\s*bring|What\s*to\s*bring|Things\s*to\s*bring)/i);
   if (bringHeaderMatch && bringHeaderMatch.index !== undefined) {
     const startIdx = bringHeaderMatch.index;
-    const endMatch = html.substring(startIdx).match(/(?:Termes\s*et\s*conditions|Terms\s*and\s*conditions|id=["\']tab-termes)/i);
-    const endIdx = endMatch && endMatch.index !== undefined ? startIdx + endMatch.index : startIdx + 8000;
+    const endMatch = html.substring(startIdx).match(/(?:Termes\s*et\s*conditions|Terms\s*and\s*conditions|General\s*terms|For\s*luxury\s*category|id=["\']tab-termes|id=["\']tab-terms)/i);
+    const endIdx = endMatch && endMatch.index !== undefined ? startIdx + endMatch.index : startIdx + 25000;
     const bringSub = html.substring(startIdx, endIdx);
 
     const bringListMatches = [...bringSub.matchAll(/class=["\x27][^"\x27]*kt-svg-icon-list-text[^"\x27]*["\x27][^>]*>(.*?)<\/span>/gis)];
     bringListMatches.forEach(m => {
-      let clean = m[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#8211;/g, '-').replace(/&#8217;/g, "'").trim();
+      let clean = cleanText(m[1]);
       if (clean && !whatToBring.includes(clean)) whatToBring.push(clean);
     });
     if (whatToBring.length === 0) {
       const liMatches = [...bringSub.matchAll(/<li[^>]*>(.*?)<\/li>/gis)];
       liMatches.forEach(m => {
-        let clean = m[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#8211;/g, '-').replace(/&#8217;/g, "'").trim();
+        let clean = cleanText(m[1]);
         if (clean && clean.length > 3 && !whatToBring.includes(clean)) whatToBring.push(clean);
       });
     }
@@ -395,45 +542,53 @@ export function parseKicHtml(html: string, url: string): ScrapedBoatData {
     }
   }
 
-  // Extract Itinerary Map Image (Prioritize high-resolution route maps with 'peta', 'carte', or 'map')
+  // Extract Itinerary Map Image (Prioritize high-resolution route maps from the itinerary tab)
   let itineraryMapImage: string | undefined;
+  const isLombok = url.includes('lombok') || title.toLowerCase().includes('lombok') || boatName.toLowerCase().includes('lombok');
 
-  // 1. First priority: Images explicitly named with 'peta', 'carte', or 'map'
-  const primaryMapMatch = html.match(/src=["\x27](https:\/\/[^"\x27]*(?:peta|carte|map)[^"\x27]*\.(?:jpe?g|png|webp))["\x27]/i);
-  if (primaryMapMatch && primaryMapMatch[1]) {
-    itineraryMapImage = primaryMapMatch[1];
-  }
-
-  // 2. Second priority: Search inside itinerary tab (#tab-itinraire / #tab-itineraire / #tab-itinerary)
-  if (!itineraryMapImage) {
-    const itTabMatch = html.match(/(?:id=["\']tab-itinraire["\']|id=["\']tab-itineraire["\']|id=["\']tab-itinerary["\']|href=["\']#tab-itinraire["\']|href=["\']#tab-itinerary["\'])/i);
-    if (itTabMatch && itTabMatch.index !== undefined) {
-      const itChunk = html.substring(itTabMatch.index, itTabMatch.index + 12000);
-      const itImgMatch = itChunk.match(/src=["\x27](https:\/\/[^"\x27]*(?:route|itineraire|itinerary)[^"\x27]*\.(?:jpe?g|png|webp))["\x27]/i);
-      if (itImgMatch && itImgMatch[1]) {
-        itineraryMapImage = itImgMatch[1];
+  // 1. Search inside itinerary tab (#tab-itinraire / #tab-itineraire / #tab-itinerary)
+  const itTabMatch = html.match(/(?:id=["\']tab-itinraire["\']|id=["\']tab-itineraire["\']|id=["\']tab-itinerary["\']|href=["\']#tab-itinraire["\']|href=["\']#tab-itinerary["\'])/i);
+  if (itTabMatch && itTabMatch.index !== undefined) {
+    const itChunk = html.substring(itTabMatch.index, itTabMatch.index + 8000);
+    // Explicitly named route map
+    const explicitMap = itChunk.match(/(?:src|href|data-full-image)=["\x27](https:\/\/[^"\x27]*(?:peta|carte|map|route|itineraire|itinerary)[^"\x27]*\.(?:jpe?g|png|webp))["\x27]/i);
+    if (explicitMap && explicitMap[1]) {
+      itineraryMapImage = explicitMap[1];
+    } else {
+      // First gallery figure image inside itinerary tab (e.g. AIMAR-3J2N-LBB.webp)
+      const figImg = itChunk.match(/<figure[^>]*>[\s\S]*?(?:src|href|data-full-image)=["\x27](https:\/\/[^"\x27]+\.(?:jpe?g|png|webp))["\x27]/i) ||
+                     itChunk.match(/(?:src|data-full-image)=["\x27](https:\/\/[^"\x27]+\.(?:jpe?g|png|webp))["\x27]/i);
+      if (figImg && figImg[1] && !isJunkImage(figImg[1])) {
+        itineraryMapImage = figImg[1];
       }
     }
   }
 
-  // Fallback high-resolution route map if not detected in HTML
+  // 2. Global page search for explicit itinerary map image
   if (!itineraryMapImage) {
-    if (url.includes('lombok') || title.toLowerCase().includes('lombok')) {
+    const globalMatch = html.match(/src=["\x27](https:\/\/[^"\x27]*(?:peta-itinerary|carte-itineraire|map-itinerary|itinerary-map)[^"\x27]*\.(?:jpe?g|png|webp))["\x27]/i);
+    if (globalMatch && globalMatch[1]) {
+      itineraryMapImage = globalMatch[1];
+    }
+  }
+
+  // 3. Guaranteed valid 200 OK fallbacks (never 404!)
+  if (!itineraryMapImage) {
+    if (isLombok) {
       itineraryMapImage = 'https://lebaliblog.com/wp-content/uploads/2025/11/Peta-Itinerary_Lady-Grace-Lombok-to-Flores.webp';
     } else {
-      itineraryMapImage = 'https://lebaliblog.com/wp-content/uploads/2024/01/Carte-Itineraire-Komodo-3J2N.webp';
+      itineraryMapImage = 'https://lebaliblog.com/wp-content/uploads/2025/01/Peta-Itinerary_OT-Labuan-Bajo-PP-3J2N.webp';
     }
   }
 
   // Extract Itinerary Days: Day 1, Day 2, Day 3
-  const isLombok = url.includes('lombok') || title.toLowerCase().includes('lombok');
   const itineraryDays: ScrapedItineraryDay[] = isLombok ? [
     {
       dayNumber: 1,
       title: isLBB ? 'Départ de Lombok - Île de Kenawa - Navigation' : 'Lombok Departure - Kenawa Island - Sailing',
       destinations: ['Lombok Harbour', 'Kenawa Island'],
       images: [
-        'https://lebaliblog.com/wp-content/uploads/2023/11/DAY1-Kenawa-Island.webp',
+        'https://lebaliblog.com/wp-content/uploads/2025/04/Kelor-Island-01.webp',
         'https://lebaliblog.com/wp-content/uploads/2024/01/DAY1-Kelor-Island.webp'
       ],
       description: isLBB
@@ -445,8 +600,8 @@ export function parseKicHtml(html: string, url: string): ScrapedBoatData {
       title: isLBB ? 'Baie de Saleh - Requins-Baleines - Île de Satonda' : 'Saleh Bay - Whale Sharks - Satonda Island',
       destinations: ['Saleh Bay (Whale Sharks)', 'Satonda Island'],
       images: [
-        'https://lebaliblog.com/wp-content/uploads/2023/11/Whale-Shark-Saleh-Bay.webp',
-        'https://lebaliblog.com/wp-content/uploads/2023/11/Satonda-Island.webp'
+        'https://lebaliblog.com/wp-content/uploads/2025/04/Snorkeling-Komodo-Croisiere-2026.webp',
+        'https://lebaliblog.com/wp-content/uploads/2025/11/Satonda-Island.webp'
       ],
       description: isLBB
         ? 'Nage magique avec les requins-baleines à Saleh Bay, suivie d\'une escale au lac salé volcanique de l\'île de Satonda.'
@@ -471,7 +626,7 @@ export function parseKicHtml(html: string, url: string): ScrapedBoatData {
       destinations: ['Manta Point', 'Taka Makassar', 'Labuan Bajo'],
       images: [
         'https://lebaliblog.com/wp-content/uploads/2024/01/DAY2-Manta-Point.webp',
-        'https://lebaliblog.com/wp-content/uploads/2024/01/DAY1-Manjarite-Island.webp'
+        'https://lebaliblog.com/wp-content/uploads/2024/01/DAY1-Manjarite-Island-.webp'
       ],
       description: isLBB
         ? 'Snorkeling aux côtés des raies mantas géantes à Manta Point et banc de sable blanc de Taka Makassar avant l\'arrivée au port de Labuan Bajo.'
@@ -484,7 +639,7 @@ export function parseKicHtml(html: string, url: string): ScrapedBoatData {
       destinations: ['Kelor Island', 'Manjarite Island', 'Kalong Island'],
       images: [
         'https://lebaliblog.com/wp-content/uploads/2024/01/DAY1-Kelor-Island.webp',
-        'https://lebaliblog.com/wp-content/uploads/2024/01/DAY1-Manjarite-Island.webp',
+        'https://lebaliblog.com/wp-content/uploads/2024/01/DAY1-Manjarite-Island-.webp',
         'https://lebaliblog.com/wp-content/uploads/2024/01/DAY1-Kalong-Island.webp'
       ],
       description: isLBB
@@ -510,7 +665,7 @@ export function parseKicHtml(html: string, url: string): ScrapedBoatData {
       title: isLBB ? 'Île de Kanawa / Sebayur - Retour à Labuan Bajo' : 'Kanawa Island / Sebayur - Return to Labuan Bajo',
       destinations: ['Kanawa Island', 'Labuan Bajo Harbour'],
       images: [
-        'https://lebaliblog.com/wp-content/uploads/2024/01/DAY3-Kanawa-Island.webp'
+        'https://lebaliblog.com/wp-content/uploads/2024/01/DAY3-Kanawa-Island-.webp'
       ],
       description: isLBB
         ? 'Dernière séance de snorkeling sur le récif de Kanawa Island, déjeuner à bord et navigation retour vers Labuan Bajo (arrivée 12h-13h) avec transfert à l\'hôtel ou à l\'aéroport.'
@@ -553,7 +708,7 @@ export async function fetchScrapedBoat(boatUrl: string): Promise<ScrapedBoatData
   }
 
   // Also check localStorage
-  const localKey = `scraped_boat_${baseUrl}`;
+  const localKey = `scraped_boat_v9_${baseUrl}`;
   try {
     const stored = localStorage.getItem(localKey);
     if (stored) {
@@ -565,18 +720,61 @@ export async function fetchScrapedBoat(boatUrl: string): Promise<ScrapedBoatData
     }
   } catch (_) {}
 
-  try {
-    const res = await fetch(`/api/scrape-boat?url=${encodeURIComponent(baseUrl)}`);
-    if (res.ok) {
-      const data: ScrapedBoatData = await res.json();
-      scrapeCache[baseUrl] = { data, timestamp: Date.now() };
-      try {
-        localStorage.setItem(localKey, JSON.stringify(data));
-      } catch (_) {}
-      return data;
+  // Multi-tier scraper strategy:
+  // 1. Local Vite / Express / .htaccess endpoint (/api/scrape-boat)
+  // 2. Direct PHP proxy endpoint (/api/scrape-boat.php)
+  // 3. Alternative brand URL if LBB/KIC mirror exists
+  // 4. Public CORS proxy fallback for static environments
+  const altUrl = baseUrl.includes('lebaliblog.com')
+    ? baseUrl.replace('https://lebaliblog.com/bateau/', 'https://komodoislandcruises.com/boat/')
+    : baseUrl.replace('https://komodoislandcruises.com/boat/', 'https://lebaliblog.com/bateau/');
+
+  const candidateUrls: string[] = [
+    `/api/scrape-boat?url=${encodeURIComponent(baseUrl)}`,
+    `/api/scrape-boat.php?url=${encodeURIComponent(baseUrl)}`,
+  ];
+  if (altUrl !== baseUrl) {
+    candidateUrls.push(`/api/scrape-boat?url=${encodeURIComponent(altUrl)}`);
+    candidateUrls.push(`/api/scrape-boat.php?url=${encodeURIComponent(altUrl)}`);
+  }
+  // Public CORS fallbacks for 100% static hosting reliability
+  candidateUrls.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(baseUrl)}`);
+  candidateUrls.push(`https://corsproxy.io/?url=${encodeURIComponent(baseUrl)}`);
+
+  for (const fetchUrl of candidateUrls) {
+    try {
+      const res = await fetch(fetchUrl);
+      if (!res.ok) continue;
+
+      const contentType = res.headers.get('content-type') || '';
+      let data: ScrapedBoatData | null = null;
+
+      if (contentType.includes('application/json')) {
+        try {
+          const json = await res.json();
+          if (json && json.cabins && Array.isArray(json.cabins) && json.cabins.length > 0) {
+            data = json;
+          } else if (json && typeof json.html === 'string') {
+            data = parseKicHtml(json.html, baseUrl);
+          }
+        } catch (_) {}
+      } else {
+        const text = await res.text();
+        if (text && (text.includes('<html') || text.includes('entry-title') || text.includes('<body') || text.includes('tab-content'))) {
+          data = parseKicHtml(text, baseUrl);
+        }
+      }
+
+      if (data && data.cabins && data.cabins.length > 0) {
+        scrapeCache[baseUrl] = { data, timestamp: Date.now() };
+        try {
+          localStorage.setItem(localKey, JSON.stringify(data));
+        } catch (_) {}
+        return data;
+      }
+    } catch (_) {
+      // Try next candidate
     }
-  } catch (err) {
-    console.warn('API scrape-boat fetch failed, trying direct fallback:', err);
   }
 
   return null;

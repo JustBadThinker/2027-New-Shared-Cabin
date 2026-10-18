@@ -136,15 +136,8 @@ function removeAccents(str: string): string {
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
-// Elegant luxury yacht cabin fallback photos (neutral, unbranded, watermark-free, 100% public CDN)
-export const FALLBACK_CABIN_IMAGES = [
-  'https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&w=1200&q=80',
-  'https://images.unsplash.com/photo-1578683010236-d716f9a3f461?auto=format&fit=crop&w=1200&q=80',
-  'https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&w=1200&q=80',
-  'https://images.unsplash.com/photo-1590490360182-c33d57733427?auto=format&fit=crop&w=1200&q=80',
-  'https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80',
-  'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80'
-];
+// Deprecated fallback photos array (kept empty to prevent Unsplash from ever being displayed)
+export const FALLBACK_CABIN_IMAGES: string[] = [];
 
 /**
  * Generates all search variations and aliases for a boat name (handling spacing, punctuation, and numerals)
@@ -356,12 +349,7 @@ export function resolveCabinImageUrl(
     return getDisplayImageUrl(boatFiles[0].id);
   }
 
-  // 6. Universal fallback (neutral yacht photo)
-  // NEVER use files belonging to a different boat!
-  const hash = Math.abs(
-    (boatName + (cabin.id || cabin.name)).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
-  );
-  return FALLBACK_CABIN_IMAGES[hash % FALLBACK_CABIN_IMAGES.length];
+  return '';
 }
 
 // Resolve multiple images for a cabin gallery
@@ -440,10 +428,10 @@ export function resolveCabinImages(
     });
   }
 
-  // 6. Universal fallback: If this boat has ZERO photos in Drive and ZERO wired images
+  // 6. If no photos found for this boat, return empty list (never push Unsplash or fake images)
   if (images.length === 0) {
     const fallback = resolveCabinImageUrl(boatName, cabin, kicFiles, lebaliblogFiles, boatWired);
-    images.push(fallback);
+    if (fallback) images.push(fallback);
   }
 
   return images.slice(0, 5);
@@ -1216,6 +1204,66 @@ export async function revokeShareLink(shareId: string): Promise<void> {
   } catch (err) {
     console.warn('Failed to update revoke status in Firestore (updated locally):', err);
   }
+}
+
+export async function reactivateShareLink(shareId: string): Promise<void> {
+  // Update local
+  const localList = getLocalShareLinks();
+  const updated = localList.map(l => l.shareId === shareId ? { ...l, status: 'active' as const } : l);
+  localStorage.setItem(STORAGE_KEY_LINKS, JSON.stringify(updated));
+
+  // Update Firestore with timeout
+  try {
+    const docRef = doc(db, 'shareLinks', shareId);
+    await withTimeout(updateDoc(docRef, { status: 'active' }), 2000);
+  } catch (err) {
+    console.warn('Failed to reactivate link in Firestore (updated locally):', err);
+  }
+}
+
+export async function updateShareLinkSnapshot(
+  snapshot: ShareLinkSnapshot
+): Promise<{ success: boolean; cloudSynced: boolean; error?: string }> {
+  const sanitizedSnapshot = sanitizeForFirestore(snapshot);
+
+  // 1. Update local storage immediately
+  try {
+    const existing = getLocalShareLinks();
+    const updated = existing.map(l => (l.shareId === snapshot.shareId ? sanitizedSnapshot : l));
+    if (!existing.some(l => l.shareId === snapshot.shareId)) {
+      updated.unshift(sanitizedSnapshot);
+    }
+    localStorage.setItem(STORAGE_KEY_LINKS, JSON.stringify(updated));
+  } catch (err) {
+    console.warn('Failed to update share link in localStorage:', err);
+  }
+
+  // 2. Persist update to Firestore
+  let cloudSynced = false;
+  let lastError: string | undefined = undefined;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const docRef = doc(db, 'shareLinks', snapshot.shareId);
+      const cleanPayload = sanitizeForFirestore({
+        ...sanitizedSnapshot,
+        updatedAt: Date.now(),
+        updatedBy: auth.currentUser?.email || auth.currentUser?.uid || 'staff',
+      });
+
+      await withTimeout(setDoc(docRef, cleanPayload, { merge: true }), 4000);
+      cloudSynced = true;
+      break;
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+      console.warn(`Firestore update attempt ${attempt} for share link failed:`, err);
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 400));
+      }
+    }
+  }
+
+  return { success: true, cloudSynced, error: lastError };
 }
 
 export async function deleteShareLink(shareId: string): Promise<void> {

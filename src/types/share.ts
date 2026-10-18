@@ -25,6 +25,8 @@ export interface BoatSnapshot {
   cabins: CabinSnapshot[];
   fuelSurcharge?: string;
   limitedServiceNote?: string;
+  /** Explicit website source for scraping inclusions, itinerary and cabin photos */
+  sourceWebsite?: 'kic' | 'lbb';
 }
 
 export interface ShareLinkSnapshot {

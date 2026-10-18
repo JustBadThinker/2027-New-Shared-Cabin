@@ -21,7 +21,7 @@ import { WhatsAppConfigModal } from './components/WhatsAppConfigModal';
 import { syncLocalLinksToCloud } from './lib/shareService';
 import { useStore } from './store';
 import { cn, matchShortcut } from './lib/utils';
-import { Ship, Info, LogIn, LogOut, Check, AlertCircle, FileSpreadsheet, Image as ImageIcon, Loader2, HelpCircle, Link2, MessageCircle } from 'lucide-react';
+import { Ship, Info, LogIn, LogOut, Check, AlertCircle, FileSpreadsheet, Image as ImageIcon, Loader2, HelpCircle, Link2, MessageCircle, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { googleSignIn, initAuth, logout, getWhitelistedEmails } from './lib/firebase';
 import { User } from 'firebase/auth';
@@ -328,6 +328,86 @@ export default function App() {
     return <CustomerSharePage shareId={currentShareId} />;
   }
 
+  // ─── AUTH GATE ───────────────────────────────────────────────────────────────
+  // If still checking auth state, show a minimal loading screen
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="w-8 h-8 text-primary animate-spin" />
+          <p className="text-sm text-muted-foreground font-medium tracking-wide">Verifying access…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // If not logged in, block everything and show a branded sign-in wall
+  if (!googleUser) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground px-6">
+        <motion.div
+          initial={{ opacity: 0, y: 24 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45, ease: 'easeOut' }}
+          className="w-full max-w-sm flex flex-col items-center gap-8 text-center"
+        >
+          {/* Logo / Brand */}
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-16 h-16 rounded-2xl bg-primary flex items-center justify-center shadow-xl shadow-primary/20">
+              <Ship className="w-9 h-9 text-primary-foreground" />
+            </div>
+            <div>
+              <h1 className="text-3xl font-serif font-bold tracking-tight">CabinGen</h1>
+              <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground font-medium mt-1">Boat Template Engine</p>
+            </div>
+          </div>
+
+          {/* Access restricted notice */}
+          <div className="w-full bg-muted/60 border border-border rounded-2xl p-5 flex flex-col items-center gap-3">
+            <Lock className="w-6 h-6 text-muted-foreground" />
+            <div className="space-y-1">
+              <p className="font-semibold text-sm text-foreground">Staff Access Only</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                This tool is reserved for authorised operators.<br />
+                Please sign in with your whitelisted Google account to continue.
+              </p>
+            </div>
+          </div>
+
+          {/* Error state */}
+          {loginError && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="w-full flex items-start gap-2.5 text-left p-3.5 bg-destructive/10 border border-destructive/30 rounded-xl"
+            >
+              <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+              <p className="text-xs text-destructive leading-relaxed">{loginError}</p>
+            </motion.div>
+          )}
+
+          {/* Sign in button */}
+          <button
+            onClick={handleLoginClick}
+            disabled={isLoggingIn}
+            className="w-full h-12 flex items-center justify-center gap-2.5 bg-primary hover:bg-primary/90 disabled:opacity-60 text-primary-foreground font-bold text-sm rounded-xl cursor-pointer transition-all active:scale-[0.98] shadow-lg shadow-primary/20"
+          >
+            {isLoggingIn ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Signing in…</>
+            ) : (
+              <><LogIn className="w-4 h-4" /> Sign in with Google</>
+            )}
+          </button>
+
+          <p className="text-[11px] text-muted-foreground/70">
+            Only whitelisted operator accounts can access this application.
+          </p>
+        </motion.div>
+      </div>
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground transition-colors duration-300">
       <style>{`
@@ -349,13 +429,22 @@ export default function App() {
           livePreviewEnabled ? "max-w-[96%] lg:max-w-[94%] xl:max-w-[92%]" : "custom-width-container"
         )}>
           <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setIsConfiguratorOpen(true)}
-              className="p-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl shrink-0 cursor-pointer transition-all hover:scale-[1.03] active:scale-[0.97] flex items-center justify-center shadow-md shadow-primary/10 select-none border-transparent focus:ring-2 focus:ring-ring"
-              title="Open Layout & Data Center"
-            >
-              <Ship className="w-6 h-6" />
-            </button>
+            {googleUser ? (
+              <button 
+                onClick={() => setIsConfiguratorOpen(true)}
+                className="p-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl shrink-0 cursor-pointer transition-all hover:scale-[1.03] active:scale-[0.97] flex items-center justify-center shadow-md shadow-primary/10 select-none border-transparent focus:ring-2 focus:ring-ring"
+                title="Open Layout & Data Center"
+              >
+                <Ship className="w-6 h-6" />
+              </button>
+            ) : (
+              <div
+                className="p-2 bg-muted text-muted-foreground rounded-xl shrink-0 flex items-center justify-center border border-border/40 cursor-not-allowed select-none"
+                title="Staff Only – Please sign in to access settings"
+              >
+                <Lock className="w-6 h-6" />
+              </div>
+            )}
             <div className="flex flex-col">
               <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="text-xl font-serif font-bold tracking-tight whitespace-nowrap">CabinGen</h1>
@@ -567,82 +656,6 @@ export default function App() {
         </div>
         {showNotepad !== false && <Notepad />}
       </main>
-
-      {/* Google Sign-in Synchronisation Modal wrapper */}
-      <AnimatePresence>
-        {showLoginPrompt && (
-          <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md overflow-hidden select-none">
-            <motion.div
-              initial={{ scale: 0.94, opacity: 0, y: 15 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 15 }}
-              transition={{ type: "spring", damping: 25, stiffness: 350 }}
-              className="relative w-full max-w-md bg-card border border-border rounded-3xl p-8 shadow-2xl flex flex-col gap-6 text-center"
-            >
-              {/* Icon */}
-              <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-500 flex items-center justify-center mx-auto shadow-sm">
-                <FileSpreadsheet className="w-8 h-8" />
-              </div>
-
-              {/* Title & Desc */}
-              <div className="space-y-2">
-                <h3 className="text-xl font-serif font-bold tracking-tight text-foreground">
-                  Connect Google Workspace
-                </h3>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Connect your Google account with read-only permissions to instantly sync cabin images from your shared Drive folders and generate boat availability lists straight from Google Sheets!
-                </p>
-              </div>
-
-              {loginError && (
-                <div className="p-3.5 bg-destructive/5 text-destructive rounded-xl border border-destructive/10 text-xs text-left leading-relaxed flex items-start gap-2 max-h-32 overflow-y-auto">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-destructive" />
-                  <span>{loginError}</span>
-                </div>
-              )}
-
-              {/* Interactive choices */}
-              <div className="flex flex-col gap-2.5">
-                <button
-                  type="button"
-                  onClick={handleLoginClick}
-                  disabled={isLoggingIn}
-                  className="w-full h-12 rounded-xl bg-primary hover:bg-primary/95 text-primary-foreground font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer flex items-center justify-center gap-2 shadow-md disabled:opacity-65"
-                >
-                  {isLoggingIn ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Connecting Account...
-                    </>
-                  ) : (
-                    <>
-                      <LogIn className="w-4 h-4" />
-                      Sign-In with Google
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleContinueOffline}
-                  disabled={isLoggingIn}
-                  className="w-full h-12 rounded-xl bg-secondary hover:bg-secondary/80 border border-border text-foreground font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer flex items-center justify-center gap-2"
-                >
-                  Continue Offline / Skip
-                </button>
-              </div>
-
-              {/* Helpful footer */}
-              <div className="text-[10px] text-muted-foreground/80 leading-normal flex items-start gap-1.5 text-left bg-muted/40 p-3.5 rounded-xl border border-border/40">
-                <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                <span>
-                  You can also use files locally. Upload raw Excel or CSV files inside <strong>Step 1</strong> at any time to work without cloud integrations.
-                </span>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       <AppGuide isOpen={showGuide} onClose={() => setShowGuide(false)} />
       <AppConfigurator isOpen={isConfiguratorOpen} onClose={() => setIsConfiguratorOpen(false)} />
